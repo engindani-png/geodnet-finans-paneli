@@ -21,6 +21,17 @@ except:
 
 BASE_URL = "https://consoleresapi.geodnet.com"
 
+# --- YARDIMCI FONKSIYON: TURKCE KARAKTER TEMIZLEME ---
+def temizle(text):
+    """Excel'den gelen verideki Turkce karakterleri PDF uyumlu hale getirir"""
+    mapping = {
+        "ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U",
+        "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"
+    }
+    for key, val in mapping.items():
+        text = str(text).replace(key, val)
+    return text
+
 # --- FONKSIYONLAR ---
 def get_live_prices():
     try:
@@ -66,7 +77,8 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     
     pdf.set_font("helvetica", '', 11)
     pdf.ln(5)
-    pdf.cell(95, 8, f"Musteri: {musteri_adi}")
+    # Excel'den gelen ismi temizleyerek yaziyoruz
+    pdf.cell(95, 8, f"Musteri: {temizle(musteri_adi)}")
     pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
     pdf.cell(190, 8, f"Donem: {s_date.strftime('%d.%m.%Y')} - {e_date.strftime('%d.%m.%Y')}", ln=True)
     pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | USD Kuru: {u_try:.2f} TL", ln=True)
@@ -135,16 +147,10 @@ if process_btn and uploaded_file:
             raw_data = get_all_rewards(sn_no, start_date, end_date)
             total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
             
-            # --- DETAYLI HESAPLAMALAR ---
             token_25 = total_token * 0.25
             tl_25 = token_25 * geod_tl_rate
-            
-            needs_fix = "EVET" if tl_25 < 500 else "HAYIR"
             fix_tl = max(0, 500 - tl_25)
             fix_token = fix_tl / geod_tl_rate if geod_tl_rate > 0 else 0
-            
-            total_paid_token = token_25 + fix_token
-            net_us_token = total_token - total_paid_token
             
             results.append({
                 "Musteri": m_name,
@@ -152,32 +158,28 @@ if process_btn and uploaded_file:
                 "Top_GEOD": total_token,
                 "Musteri_Pay_Token": token_25,
                 "Musteri_Pay_TL": tl_25,
-                "Tamamlama_Gerekiyor": needs_fix,
+                "Tamamlama_Gerekiyor": "EVET" if tl_25 < 500 else "HAYIR",
                 "Tamamlama_TL": fix_tl,
                 "Musteri_Toplam_TL": tl_25 + fix_tl,
-                "Musteri_Odenecek_Toplam_Token": total_paid_token,
-                "Bize_Net_Kalan_Token": net_us_token
+                "Musteri_Odenecek_Toplam_Token": token_25 + fix_token,
+                "Bize_Net_Kalan_Token": total_token - (token_25 + fix_token)
             })
             p_bar.progress((index + 1) / len(input_df))
 
         status_text.success("Hesaplama tamamlandi!")
         res_df = pd.DataFrame(results)
         
-        # --- TABLO GOSTERIMI ---
         st.header("📋 Detayli Cihaz Analizi")
-        st.dataframe(res_df.style.format({
-            "Top_GEOD": "{:.2f}", "Musteri_Pay_Token": "{:.2f}", "Musteri_Pay_TL": "{:.2f} TL",
-            "Tamamlama_TL": "{:.2f} TL", "Musteri_Toplam_TL": "{:.2f} TL", 
-            "Musteri_Odenecek_Toplam_Token": "{:.2f}", "Bize_Net_Kalan_Token": "{:.2f}"
-        }), use_container_width=True)
+        st.dataframe(res_df, use_container_width=True)
         
         st.divider()
         st.subheader("📄 Musteri PDF Raporlari")
         cols = st.columns(3)
         for i, m_name in enumerate(res_df['Musteri'].unique()):
             m_data = res_df[res_df['Musteri'] == m_name]
+            # PDF OLUSTURMA SIRASINDA TEMIZLEME YAPIYORUZ
             pdf_bytes = create_pdf(m_name, m_data, st.session_state.geod_p, st.session_state.usd_t, start_date, end_date)
             with cols[i % 3]:
-                st.download_button(f"📥 {m_name} PDF", data=pdf_bytes, file_name=f"{m_name}_Rapor.pdf", mime="application/pdf", key=f"p_{i}")
+                st.download_button(f"📥 {temizle(m_name)} PDF", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", mime="application/pdf", key=f"p_{i}")
     except Exception as e:
         st.error(f"Hata detayi: {e}")
