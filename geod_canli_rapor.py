@@ -6,136 +6,133 @@ import pandas as pd
 from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+from fpdf import FPDF
 import warnings
 
 warnings.filterwarnings('ignore')
 
-# --- GEODNET API AYARLARI ---
-# Döküman Sayfa 1: clientId ve accessToken kimlik doğrulama için şarttır [cite: 5, 6, 13]
-if "CLIENT_ID" not in st.secrets or "TOKEN" not in st.secrets:
-    st.error("⚠️ Secrets Paneli Yapılandırılmadı! Lütfen 'Manage App > Settings > Secrets' kısmına CLIENT_ID ve TOKEN ekleyin.")
+# --- GEODNET API VE SECRETS ---
+try:
+    CLIENT_ID = st.secrets["CLIENT_ID"]
+    TOKEN = st.secrets["TOKEN"]
+except:
+    st.error("Secrets bulunamadı! Lütfen Settings > Secrets kısmını kontrol edin.")
     st.stop()
 
-CLIENT_ID = st.secrets["CLIENT_ID"]
-TOKEN = st.secrets["TOKEN"]
-BASE_URL = "https://consoleresapi.geodnet.com" # Güncel bağlantı adresi
+BASE_URL = "https://consoleresapi.geodnet.com"
 
-# --- CANLI KUR FONKSİYONLARI ---
+# --- FONKSİYONLAR ---
 def get_live_prices():
-    """Canlı GEOD ve USD/TRY kurunu çeker"""
     try:
-        # GEOD Fiyatı (CoinGecko)
-        geod_res = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=5)
-        geod_p = geod_res.json()['geodnet']['usd']
+        geod_p = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=5).json()['geodnet']['usd']
+        usd_t = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
+        return geod_p, usd_t
     except:
-        geod_p = 0.1510 # Hata durumunda fallback
-        
-    try:
-        # USD/TRY Kuru (Serbest Piyasa API)
-        usd_res = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5)
-        usd_t = usd_res.json()['rates']['TRY']
-    except:
-        usd_t = 32.50 # Hata durumunda fallback
-        
-    return geod_p, usd_t
+        return 0.1500, 33.00
 
 def encrypt_param(data, key):
-    """Dökümanda belirtilen AES-CBC şifreleme"""
     k_fixed = str(key).rjust(16, '0')[:16].encode('utf-8')
     cipher = AES.new(k_fixed, AES.MODE_CBC, iv=k_fixed)
     padded_data = pad(str(data).encode('utf-8'), 16)
     return binascii.hexlify(cipher.encrypt(padded_data)).decode('utf-8')
 
-# --- STREAMLIT ARAYÜZ ---
-st.set_page_config(page_title="GEODNET Canlı Finans", layout="wide")
-st.title("🛰️ GEODNET Canlı Kur ve Müşteri Hakediş Sistemi")
+def get_all_rewards(sn, start, end):
+    """30 gün kısıtlamasını aşmak için parçalı sorgu yapar"""
+    all_data = []
+    curr_start = start
+    while curr_start <= end:
+        curr_end = min(curr_start + timedelta(days=29), end)
+        ts = str(int(time.time() * 1000))
+        params = {
+            "clientId": CLIENT_ID,
+            "timeStamp": encrypt_param(ts, TOKEN),
+            "sn": encrypt_param(sn, TOKEN),
+            "minTime": encrypt_param(curr_start.strftime('%Y-%m-%d'), TOKEN),
+            "maxTime": encrypt_param(curr_end.strftime('%Y-%m-%d'), TOKEN)
+        }
+        try:
+            r = requests.get(f"{BASE_URL}/getRewardsTimeLine", params=params, verify=False, timeout=15)
+            res = r.json()
+            if res.get('statusCode') == 200:
+                all_data.extend(res.get('data', []))
+        except: pass
+        curr_start = curr_end + timedelta(days=1)
+    return all_data
 
-# Kur Verilerini Al
+# --- PDF OLUŞTURMA ---
+def create_pdf(musteri, data_df, g_price, u_try):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(190, 10, "GEODNET Hakedis Raporu", ln=True, align='C')
+    pdf.set_font("Arial", '', 12)
+    pdf.cell(190, 10, f"Musteri: {musteri}", ln=True)
+    pdf.cell(190, 10, f"Tarih: {datetime.now().strftime('%Y-%m-%d')}", ln=True)
+    pdf.ln(5)
+    
+    # Tablo Başlığı
+    pdf.set_fill_color(200, 220, 255)
+    pdf.cell(60, 10, "Cihaz SN", 1, 0, 'C', True)
+    pdf.cell(40, 10, "Top. GEOD", 1, 0, 'C', True)
+    pdf.cell(40, 10, "Pay (%25)", 1, 0, 'C', True)
+    pdf.cell(50, 10, "Toplam TL", 1, 1, 'C', True)
+    
+    total_payment = 0
+    for _, row in data_df.iterrows():
+        pdf.cell(60, 10, str(row['SN']), 1)
+        pdf.cell(40, 10, f"{row['Top. GEOD']:.2f}", 1)
+        pdf.cell(40, 10, f"{row['Musteri %25']:.2f}", 1)
+        pdf.cell(50, 10, f"{row['Musteri Toplam TL']:.2f} TL", 1)
+        total_payment += row['Musteri Toplam TL']
+        pdf.ln(0)
+    
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(190, 10, f"Genel Toplam Odenecek: {total_payment:.2f} TL", ln=True)
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- ARA YÜZ ---
+st.set_page_config(page_title="GEODNET Finans", layout="wide")
+st.title("🛰️ GEODNET Gelir Garanti ve PDF Rapor Sistemi")
+
 if 'geod_p' not in st.session_state:
     st.session_state.geod_p, st.session_state.usd_t = get_live_prices()
 
-# --- YAN PANEL ---
 with st.sidebar:
-    st.header("📈 Canlı Piyasalar")
-    st.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
-    st.metric("USD / TRY", f"₺{st.session_state.usd_t:.2f}")
-    if st.button("Kurları Güncelle"):
-        st.session_state.geod_p, st.session_state.usd_t = get_live_prices()
-        st.rerun()
-    
-    st.divider()
-    st.header("📂 Rapor Ayarları")
-    uploaded_file = st.file_uploader("Müşteri Listesi (Excel/CSV)", type=['xlsx', 'csv'])
-    start_date = st.date_input("Başlangıç", datetime.now() - timedelta(days=30))
-    end_date = st.date_input("Bitiş", datetime.now())
-    process_btn = st.button("HESAPLA VE RAPORLA", type="primary", use_container_width=True)
+    st.metric("GEOD/USD", f"${st.session_state.geod_p:.4f}")
+    st.metric("USD/TRY", f"₺{st.session_state.usd_t:.2f}")
+    uploaded_file = st.file_uploader("Cihaz Listesi", type=['xlsx', 'csv'])
+    start_date = st.date_input("Baslangic", datetime.now() - timedelta(days=31))
+    end_date = st.date_input("Bitis", datetime.now())
+    process_btn = st.button("HESAPLA")
 
 if process_btn and uploaded_file:
-    # Kur bilgilerini sabitle
-    current_geod = st.session_state.geod_p
-    current_usd = st.session_state.usd_t
-    geod_tl_price = current_geod * current_usd
+    input_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+    input_df.columns = ['Musteri', 'SN'] + list(input_df.columns[2:])
     
-    try:
-        input_df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-        input_df.columns = ['Musteri', 'SN'] + list(input_df.columns[2:])
+    results = []
+    geod_tl = st.session_state.geod_p * st.session_state.usd_t
+    
+    for _, row in input_df.iterrows():
+        raw_data = get_all_rewards(str(row['SN']).strip(), start_date, end_date)
+        total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
         
-        results = []
-        pbar = st.progress(0)
+        c_share = total_token * 0.25
+        c_tl = c_share * geod_tl
+        fix_tl = max(0, 500 - c_tl)
+        total_tl = c_tl + fix_tl
         
-        for index, row in input_df.iterrows():
-            sn = str(row['SN']).strip()
-            musteri = str(row['Musteri']).strip()
-            
-            ts = str(int(time.time() * 1000))
-            params = {
-                "clientId": CLIENT_ID,
-                "timeStamp": encrypt_param(ts, TOKEN),
-                "sn": encrypt_param(sn, TOKEN),
-                "minTime": encrypt_param(start_date.strftime('%Y-%m-%d'), TOKEN),
-                "maxTime": encrypt_param(end_date.strftime('%Y-%m-%d'), TOKEN)
-            }
-            
-            try:
-                # Döküman Sayfa 6: getRewardsTimeLine
-                r = requests.get(f"{BASE_URL}/getRewardsTimeLine", params=params, verify=False, timeout=15)
-                res = r.json()
-                
-                if res.get('statusCode') == 200:
-                    data = res.get('data', [])
-                    total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in data])
-                    
-                    # Finansal Hesaplamalar
-                    cust_share = total_token * 0.25
-                    cust_tl = cust_share * geod_tl_price
-                    fix_tl = max(0, 500 - cust_tl)
-                    fix_token = fix_tl / geod_tl_price if geod_tl_price > 0 else 0
-                    total_paid = cust_share + fix_token
-                    
-                    results.append({
-                        "Müşteri": musteri, "SN": sn, "Top. GEOD": total_token,
-                        "Müşteri %25": cust_share, "Müşteri TL": cust_tl,
-                        "Tamamlama (TL)": fix_tl, "Tamamlama (GEOD)": fix_token,
-                        "Müşteri Toplam GEOD": total_paid, "Net Bize Kalan GEOD": total_token - total_paid,
-                        "GEOD Fiyatı": current_geod, "USD Kuru": current_usd
-                    })
-            except: pass
-            pbar.progress((index + 1) / len(input_df))
-
-        # --- TABLO VE RAPOR ---
-        df = pd.DataFrame(results)
-        st.header(f"📋 Finansal Rapor ({start_date} / {end_date})")
-        st.dataframe(df)
-        
-        # Müşteri Bazlı Dip Toplam
-        st.subheader("👥 Müşteri Ödeme Özeti")
-        summary = df.groupby('Müşteri').agg({
-            'SN': 'count', 'Müşteri Toplam GEOD': 'sum', 'Net Bize Kalan GEOD': 'sum', 
-            'Tamamlama (TL)': 'sum', 'GEOD Fiyatı': 'first', 'USD Kuru': 'first'
-        }).rename(columns={'SN': 'Cihaz Sayısı'})
-        st.table(summary)
-
-    except Exception as e:
-
-        st.error(f"Hata: {e}")
-
+        results.append({
+            "Müşteri": row['Musteri'], "SN": row['SN'], "Top. GEOD": total_token,
+            "Musteri %25": c_share, "Musteri Toplam TL": total_tl
+        })
+    
+    res_df = pd.DataFrame(results)
+    st.dataframe(res_df)
+    
+    st.divider()
+    st.subheader("📄 Müşteri Özel PDF Raporları")
+    for musteri in res_df['Müşteri'].unique():
+        m_data = res_df[res_df['Müşteri'] == musteri]
+        pdf_bytes = create_pdf(musteri, m_data, st.session_state.geod_p, st.session_state.usd_t)
+        st.download_button(f"📥 {musteri} Raporunu İndir", data=pdf_bytes, file_name=f"{musteri}_Rapor.pdf", mime="application/pdf")
