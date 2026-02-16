@@ -14,7 +14,20 @@ import warnings
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
-# --- 1. HAVA DURUMU SİSTEMİ ---
+# --- 1. DİNAMİK SELAMLAMA FONKSİYONU ---
+def get_greeting():
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        greet = "Günaydın"
+    elif 12 <= hour < 18:
+        greet = "Tünaydın"
+    elif 18 <= hour < 22:
+        greet = "İyi Akşamlar"
+    else:
+        greet = "İyi Geceler"
+    return f"✨ {greet}, MonsPro Team Hoşgeldiniz."
+
+# --- 2. HAVA DURUMU SİSTEMİ ---
 def get_weather():
     cities = {
         "İstanbul": {"lat": 41.0082, "lon": 28.9784},
@@ -33,8 +46,6 @@ def get_weather():
             curr = res['current_weather']
             precip = res['daily']['precipitation_sum'][0]
             wind = res['daily']['windspeed_10m_max'][0]
-            
-            # Risk Analizi: Yağış > 10mm veya Rüzgar > 40km/s ise kritik
             is_risky = precip > 10 or wind > 40
             weather_results.append({
                 "city": city, "temp": curr['temperature'], 
@@ -44,7 +55,7 @@ def get_weather():
     except:
         return []
 
-# --- 2. FİNANSAL YARDIMCI FONKSİYONLAR ---
+# --- 3. FİNANSAL YARDIMCI FONKSİYONLAR ---
 def temizle(text):
     mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
     for key, val in mapping.items():
@@ -120,13 +131,16 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(190, 10, f"Genel Toplam: {data_df['Musteri_Toplam_TL'].sum():.2f} TL", ln=True, align='R')
     return bytes(pdf.output())
 
-# --- 3. SESSION STATE ---
+# --- 4. SESSION STATE ---
 if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
 if 'geod_p' not in st.session_state:
     st.session_state.geod_p, st.session_state.usd_t, st.session_state.price_df = get_live_prices()
 
-# --- 4. ÜST PANEL (HAVA DURUMU) ---
+# --- 5. EN ÜST KARŞILAMA MESAJI ---
+st.markdown(f"<h3 style='text-align: center; color: #4A4A4A;'>{get_greeting()}</h3>", unsafe_allow_html=True)
+
+# --- 6. HAVA DURUMU PANELİ ---
 weather_data = get_weather()
 if weather_data:
     cols = st.columns(len(weather_data))
@@ -141,7 +155,7 @@ if weather_data:
                 </div>
             """, unsafe_allow_html=True)
 
-# --- 5. SIDEBAR (NAVİGASYON VE SORGULAMA) ---
+# --- 7. SIDEBAR (NAVİGASYON VE SORGULAMA) ---
 with st.sidebar:
     st.markdown("<h1 style='color: #FF4B4B;'>🛰️ MonsPro</h1>", unsafe_allow_html=True)
     st.write("Operasyonel Kontrol Paneli")
@@ -160,7 +174,10 @@ with st.sidebar:
             
         start_date = st.date_input("Başlangıç", datetime.now() - timedelta(days=31))
         end_date = st.date_input("Bitiş", datetime.now())
-        kayit_adi = st.text_input("Arşiv Kayıt İsmi", "")
+        
+        # Otomatik Zaman Damgalı Kayıt İsmi
+        varsayilan_isim = datetime.now().strftime("%d.%m.%Y %H:%M")
+        kayit_adi = st.text_input("Arşiv Kayıt İsmi", value=varsayilan_isim)
         
         if st.button("HESAPLA", type="primary", use_container_width=True):
             source_df = None
@@ -203,7 +220,7 @@ with st.sidebar:
         st.session_state.last_results = None
         st.rerun()
 
-# --- 6. ANA EKRAN (CANLI DASHBOARD) ---
+# --- 8. ANA EKRAN (CANLI DASHBOARD) ---
 st.divider()
 c1, c2, c3 = st.columns(3)
 geod_try = st.session_state.geod_p * st.session_state.usd_t
@@ -225,23 +242,18 @@ if not st.session_state.price_df.empty:
             st.success("**GÜVENLİ BÖLGE**\nFiyat 0.12$ üzerinde. Operasyonel kârlılık stabil.")
         else:
             st.error("**DÜŞÜK FİYAT RİSKİ**\nFiyat 0.12$ altında. Tamamlama (Fix) maliyetleri yükseliyor!")
-        st.info("Müşteri ödemelerini planlarken grafik üzerindeki kırmızı eşik değerini baz alınız.")
 
-# --- 7. DİNAMİK HESAPLAMA SONUÇLARI ---
+# --- 9. DİNAMİK HESAPLAMA SONUÇLARI ---
 if st.session_state.last_results is not None:
     st.divider()
     st.header("📋 Hakediş Sonuçları")
     res_data = st.session_state.last_results
     df = res_data["df"]
-    
-    # Metrik Özet
     sm1, sm2, sm3 = st.columns(3)
     sm1.metric("Toplam Kazanç (Token)", f"{df['Top_GEOD'].sum():.2f}")
     sm2.metric("Müşterilere Ödenen", f"{df['Musteri_Odenecek_Toplam_Token'].sum():.2f}")
     sm3.metric("MonsPro Net Kâr", f"{df['Bize_Net_Kalan_Token'].sum():.2f}")
-    
     st.dataframe(df, use_container_width=True)
-    
     st.subheader("📥 Raporları İndir")
     for i, m_name in enumerate(df['Musteri'].unique()):
         m_data = df[df['Musteri'] == m_name]
