@@ -72,7 +72,6 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | USD Kuru: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
     
-    # Tablo Başlığı
     pdf.set_fill_color(230, 230, 230)
     pdf.set_font("helvetica", 'B', 10)
     pdf.cell(50, 10, "Cihaz SN", 1, 0, 'C', True)
@@ -82,8 +81,6 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     
     pdf.set_font("helvetica", '', 10)
     total_val = 0
-    
-    # SÜTUN İSİMLERİ BURADA SABİTLENDİ
     for _, row in data_df.iterrows():
         pdf.cell(50, 10, str(row['SN']), 1)
         pdf.cell(40, 10, f"{row['Top_GEOD']:.2f}", 1, 0, 'C')
@@ -94,7 +91,9 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     pdf.ln(5)
     pdf.set_font("helvetica", 'B', 12)
     pdf.cell(190, 10, f"Genel Toplam: {total_val:.2f} TL", ln=True, align='R')
-    return pdf.output()
+    
+    # KRİTİK DÜZELTME: bytearray'i bytes formatına çeviriyoruz
+    return bytes(pdf.output())
 
 # --- ARA YÜZ ---
 st.set_page_config(page_title="GEODNET Finans", layout="wide")
@@ -132,7 +131,6 @@ if process_btn and uploaded_file:
             raw_data = get_all_rewards(sn_no, start_date, end_date)
             total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
             
-            # HESAPLAMALAR VE SÜTUN İSİMLERİ (PDF ile tam uyumlu)
             token_25 = total_token * 0.25
             tl_25 = token_25 * geod_tl_rate
             fix_tl = max(0, 500 - tl_25)
@@ -153,8 +151,15 @@ if process_btn and uploaded_file:
         cols = st.columns(3)
         for i, m_name in enumerate(res_df['Musteri'].unique()):
             m_data = res_df[res_df['Musteri'] == m_name]
+            # PDF'i bytes olarak alıyoruz
             pdf_bytes = create_pdf(m_name, m_data, st.session_state.geod_p, st.session_state.usd_t, start_date, end_date)
             with cols[i % 3]:
-                st.download_button(f"📥 {m_name} PDF", data=pdf_bytes, file_name=f"{m_name}_Rapor.pdf", mime="application/pdf", key=f"p_{i}")
+                st.download_button(
+                    label=f"📥 {m_name} PDF", 
+                    data=pdf_bytes, 
+                    file_name=f"{m_name}_Rapor.pdf", 
+                    mime="application/pdf", 
+                    key=f"p_{i}"
+                )
     except Exception as e:
         st.error(f"Hata detayi: {e}")
