@@ -11,16 +11,14 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # --- GEODNET API AYARLARI ---
-try:
-    # Streamlit Secrets üzerinden çekiyoruz
-    CLIENT_ID = st.secrets["CLIENT_ID"] [cite: 5, 6]
-    TOKEN = st.secrets["TOKEN"] [cite: 6, 7]
-except Exception as e:
-    st.error("Secrets (Hassas Bilgiler) bulunamadı! Lütfen Streamlit panelinden ayarları kontrol edin.") [cite: 166]
+# Döküman Sayfa 1: clientId ve accessToken kimlik doğrulama için şarttır [cite: 5, 6, 13]
+if "CLIENT_ID" not in st.secrets or "TOKEN" not in st.secrets:
+    st.error("⚠️ Secrets Paneli Yapılandırılmadı! Lütfen 'Manage App > Settings > Secrets' kısmına CLIENT_ID ve TOKEN ekleyin.")
     st.stop()
 
-# Bu adres dökümandaki yapının güncel halidir
-BASE_URL = "https://consoleresapi.geodnet.com" [cite: 32]
+CLIENT_ID = st.secrets["CLIENT_ID"]
+TOKEN = st.secrets["TOKEN"]
+BASE_URL = "https://consoleresapi.geodnet.com" # Güncel bağlantı adresi
 
 # --- CANLI KUR FONKSİYONLARI ---
 def get_live_prices():
@@ -140,3 +138,4 @@ if process_btn and uploaded_file:
     except Exception as e:
 
         st.error(f"Hata: {e}")
+
