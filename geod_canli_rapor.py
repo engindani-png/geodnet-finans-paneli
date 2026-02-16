@@ -13,13 +13,14 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="MonsPro | GEODNET Finans", layout="wide")
+st.set_page_config(page_title="MonsPro | GEODNET Portal", layout="wide")
 
-# --- SOL ÜST MARKA LOGOSU ---
+# --- SOL ÜST MARKA (NAVİGASYON) ---
 st.sidebar.markdown(
     """
     <div style="cursor: pointer;" onclick="window.location.reload();">
-        <h1 style='color: #FF4B4B; font-family: sans-serif;'>🛰️ MonsPro</h1>
+        <h1 style='color: #FF4B4B; font-family: sans-serif; margin-bottom: 0;'>🛰️ MonsPro</h1>
+        <p style='font-size: 0.8em; color: gray;'>Finansal Analiz Merkezi</p>
     </div>
     """, unsafe_allow_html=True
 )
@@ -29,12 +30,12 @@ try:
     CLIENT_ID = st.secrets["CLIENT_ID"]
     TOKEN = st.secrets["TOKEN"]
 except:
-    st.error("Secrets bulunamadi! Lutfen Settings > Secrets kismini kontrol edin.")
+    st.error("Secrets bulunamadı! Lütfen Settings > Secrets kısmını kontrol edin.")
     st.stop()
 
 BASE_URL = "https://consoleresapi.geodnet.com"
 
-# --- YARDIMCI FONKSIYONLAR ---
+# --- YARDIMCI FONKSİYONLAR ---
 def temizle(text):
     mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
     for key, val in mapping.items():
@@ -43,13 +44,10 @@ def temizle(text):
 
 def get_live_prices():
     try:
-        # CoinGecko üzerinden son 30 günlük fiyat verisi alıyoruz (Grafik için)
         res = requests.get("https://api.coingecko.com/api/v3/coins/geodnet/market_chart?vs_currency=usd&days=30", timeout=10).json()
-        prices = res['prices']
-        df_p = pd.DataFrame(prices, columns=['time', 'price'])
+        df_p = pd.DataFrame(res['prices'], columns=['time', 'price'])
         df_p['time'] = pd.to_datetime(df_p['time'], unit='ms')
-        
-        geod_p = df_p['price'].iloc[-1] # Son fiyat
+        geod_p = df_p['price'].iloc[-1]
         usd_t = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
         return geod_p, usd_t, df_p
     except:
@@ -112,80 +110,39 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
 # --- SESSION STATE ---
 if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
-
-# --- VERI CEKIMI ---
 if 'geod_p' not in st.session_state:
     st.session_state.geod_p, st.session_state.usd_t, st.session_state.price_df = get_live_prices()
 
-# --- SIDEBAR ---
-st.sidebar.title("Menü")
-menu = st.sidebar.radio("İşlem Seçin", ["📊 Yeni Hesaplama", "📚 Geçmiş Kayıtlar"])
-
-if st.sidebar.button("♻️ Sayfayı Yenile / Ana Sayfa"):
-    st.rerun()
-
-# --- ANALİZ VE GRAFİK BÖLÜMÜ (ANA EKRAN) ---
-st.title("🛰️ MonsPro Dashboard")
-
-# Metrikler
-c1, c2, c3 = st.columns(3)
-geod_tl = st.session_state.geod_p * st.session_state.usd_t
-c1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
-c2.metric("USD / TRY", f"{st.session_state.usd_t:.2f} TL")
-c3.metric("GEOD / TRY", f"{geod_tl:.2f} ₺")
-
-# Grafik ve Stratejik Analiz
-if not st.session_state.price_df.empty:
-    pivot_noktasi = 500 / (200 * st.session_state.usd_t) # 200 token üretim bazlı maliyet eşiği
-    
+# --- SIDEBAR (SORGULAMA PANELİ) ---
+with st.sidebar:
     st.divider()
-    col_chart, col_info = st.columns([2, 1])
+    menu = st.radio("İşlem Modu", ["📊 Yeni Sorgu", "📚 Arşiv"])
     
-    with col_chart:
-        st.subheader("📈 30 Günlük Fiyat Trendi")
-        fig = px.line(st.session_state.price_df, x='time', y='price', labels={'price':'Fiyat ($)', 'time':'Tarih'})
-        fig.add_hline(y=pivot_noktasi, line_dash="dash", line_color="red", annotation_text="Kritik Maliyet Eşiği")
-        st.plotly_chart(fig, use_container_width=True)
-        
-
-    with col_info:
-        st.subheader("🎯 Stratejik Öngörü")
-        if st.session_state.geod_p > pivot_noktasi:
-            st.success("**GÜVENLİ BÖLGE**\nMevcut fiyat maliyet eşiğinin üzerinde. Tamamlama (Fix) ödemeleri düşük seviyede.")
-        else:
-            st.warning("**RİSKLİ BÖLGE**\nFiyat düşük olduğu için tamamlama maliyetleri artıyor. Token çıkışı hızlanabilir.")
-        st.info(f"Maliyet Eşiği: ${pivot_noktasi:.3f}\n\n*Bu eşiğin üzerindeki her yükseliş, net kârınızı maksimize eder.*")
-
-# --- HESAPLAMA SAYFALARI ---
-if menu == "📊 Yeni Hesaplama":
-    st.divider()
-    st.subheader("Yeni Hesaplama Yap")
-    
-    with st.expander("Sorgu Parametrelerini Ayarla", expanded=True):
-        sc1, sc2 = st.columns(2)
-        input_type = sc1.radio("Giriş Yöntemi", ["Excel/CSV", "Tekil SN Sorgu"])
-        kayit_adi = sc2.text_input("Kayıt Adı (Arşiv için)", "")
-        
-        start_date = st.date_input("Başlangıç", datetime.now() - timedelta(days=31))
-        end_date = st.date_input("Bitiş", datetime.now())
+    if menu == "📊 Yeni Sorgu":
+        st.subheader("Veri Girişi")
+        input_type = st.radio("Yöntem", ["Excel/CSV", "Manuel SN"])
         
         if input_type == "Excel/CSV":
-            uploaded_file = st.file_uploader("Dosya Yükle", type=['xlsx', 'csv'])
+            uploaded_file = st.file_uploader("Dosya Seç", type=['xlsx', 'csv'])
         else:
-            sn_manual = st.text_input("SN Yazın", "")
-            m_manual = st.text_input("Müşteri Adı", "Manuel Sorgu")
-
-        if st.button("HESAPLAMAYI BAŞLAT", type="primary"):
-            # ... (Hesaplama Mantığı - Önceki sürümlerle aynı, sonuçlar last_results'a yazılır)
+            sn_manual = st.text_input("SN Yazın")
+            m_manual = st.text_input("Müşteri Adı", "Tekil Sorgu")
+            
+        start_date = st.date_input("Başlangıç", datetime.now() - timedelta(days=31))
+        end_date = st.date_input("Bitiş", datetime.now())
+        kayit_adi = st.text_input("Arşiv İsmi", "")
+        
+        if st.button("HESAPLA", type="primary", use_container_width=True):
             source_df = None
             if input_type == "Excel/CSV" and uploaded_file:
                 source_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
                 source_df.columns = ['Musteri', 'SN'] + list(source_df.columns[2:])
-            elif input_type == "Tekil SN Sorgu" and sn_manual:
+            elif input_type == "Manuel SN" and sn_manual:
                 source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual}])
             
             if source_df is not None:
                 results = []
+                geod_tl = st.session_state.geod_p * st.session_state.usd_t
                 p_bar = st.progress(0)
                 for index, row in source_df.iterrows():
                     m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
@@ -201,24 +158,64 @@ if menu == "📊 Yeni Hesaplama":
                 st.session_state.last_results = {"df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t}
                 if kayit_adi: st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
-    if st.session_state.last_results:
-        df = st.session_state.last_results["df"]
-        st.subheader("✅ Hesaplama Sonuçları")
-        st.dataframe(df, use_container_width=True)
-        # Rapor butonları burada listelenir...
-        for i, m_name in enumerate(df['Musteri'].unique()):
-            m_data = df[df['Musteri'] == m_name]
-            pdf_bytes = create_pdf(m_name, m_data, st.session_state.geod_p, st.session_state.usd_t, st.session_state.last_results["donem"])
-            st.download_button(f"📥 {m_name} PDF Raporu", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"curr_{i}")
+    elif menu == "📚 Arşiv":
+        if st.session_state.arsiv:
+            selected_h = st.selectbox("Geçmiş Kayıtlar", list(st.session_state.arsiv.keys()))
+            if st.button("Kaydı Sil", type="secondary"):
+                del st.session_state.arsiv[selected_h]
+                st.rerun()
+            if st.button("Görüntüle"):
+                st.session_state.last_results = st.session_state.arsiv[selected_h]
+        else:
+            st.info("Arşiv boş.")
 
-elif menu == "📚 Geçmiş Kayıtlar":
+# --- ANA EKRAN (DASHBOARD) ---
+st.header("📊 MonsPro Canlı Piyasa Analizi")
+
+# Canlı Metrikler
+m1, m2, m3 = st.columns(3)
+m1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
+m2.metric("USD / TRY", f"{st.session_state.usd_t:.2f} ₺")
+m3.metric("GEOD / TRY", f"{(st.session_state.geod_p * st.session_state.usd_t):.2f} ₺")
+
+# Grafik ve Stratejik Öngörü (Açılışta Her Zaman Görünür)
+if not st.session_state.price_df.empty:
     st.divider()
-    if not st.session_state.arsiv:
-        st.info("Arşivde henüz kayıt yok.")
-    else:
-        selected = st.selectbox("Geçmiş Bir Kayıt Seçin", list(st.session_state.arsiv.keys()))
-        if st.button("🗑️ BU KAYDI SİL"):
-            del st.session_state.arsiv[selected]
-            st.rerun()
-        # Kayıt detayları burada gösterilir...
-        st.dataframe(st.session_state.arsiv[selected]["df"], use_container_width=True)
+    col_chart, col_strat = st.columns([2, 1])
+    
+    with col_chart:
+        fig = px.line(st.session_state.price_df, x='time', y='price', title="30 Günlük GEOD Trendi")
+        fig.add_hline(y=0.12, line_dash="dash", line_color="red", annotation_text="Kritik Eşik (0.12$)")
+        st.plotly_chart(fig, use_container_width=True)
+        
+
+    with col_strat:
+        st.subheader("🎯 Stratejik Analiz")
+        if st.session_state.geod_p >= 0.12:
+            st.success("**GÜVENLİ BÖLGE**\nFiyat 0.12$ üzerinde. Operasyonel karlılık korunuyor.")
+        else:
+            st.error("**KRİTİK BÖLGE**\nFiyat 0.12$ altında! Tamamlama maliyetleri yüksek seviyede.")
+        st.info("Optimum ödeme için fiyatın pivot seviyelerini takip edin.")
+
+# Dinamik Hesaplama Ekranı (Sadece Hesaplama Varsa Görünür)
+if st.session_state.last_results is not None:
+    st.divider()
+    st.header("📋 Hesaplama ve Hakediş Detayları")
+    df = st.session_state.last_results["df"]
+    
+    # Yönetim Özeti
+    sm1, sm2, sm3 = st.columns(3)
+    sm1.metric("Toplam Üretim", f"{df['Top_GEOD'].sum():.2f}")
+    sm2.metric("Ödenen Toplam", f"{df['Musteri_Odenecek_Toplam_Token'].sum():.2f}")
+    sm3.metric("Bize Kalan Net", f"{df['Bize_Net_Kalan_Token'].sum():.2f}")
+    
+    st.dataframe(df, use_container_width=True)
+    
+    # Raporlar
+    st.subheader("📄 Hakediş Raporları")
+    for i, m_name in enumerate(df['Musteri'].unique()):
+        m_data = df[df['Musteri'] == m_name]
+        pdf_bytes = create_pdf(m_name, m_data, st.session_state.last_results["kur_geod"], st.session_state.last_results["kur_usd"], st.session_state.last_results["donem"])
+        col_a, col_b = st.columns([5, 1])
+        col_a.write(f"Müşteri: **{m_name}**")
+        col_b.download_button("PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"f_{i}")
