@@ -16,12 +16,12 @@ try:
     CLIENT_ID = st.secrets["CLIENT_ID"]
     TOKEN = st.secrets["TOKEN"]
 except:
-    st.error("⚠️ Secrets bulunamadı! Settings > Secrets kısmını kontrol edin.")
+    st.error("Secrets bulunamadi! Lutfen Settings > Secrets kismini kontrol edin.")
     st.stop()
 
 BASE_URL = "https://consoleresapi.geodnet.com"
 
-# --- FONKSİYONLAR ---
+# --- FONKSIYONLAR ---
 def get_live_prices():
     try:
         geod_p = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=5).json()['geodnet']['usd']
@@ -76,7 +76,7 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     pdf.set_font("helvetica", 'B', 10)
     pdf.cell(50, 10, "Cihaz SN", 1, 0, 'C', True)
     pdf.cell(40, 10, "Top. GEOD", 1, 0, 'C', True)
-    pdf.cell(45, 10, "Musteri Payi (25%)", 1, 0, 'C', True)
+    pdf.cell(45, 10, "Pay (25%)", 1, 0, 'C', True)
     pdf.cell(55, 10, "Toplam Tutar (TL)", 1, 1, 'C', True)
     
     pdf.set_font("helvetica", '', 10)
@@ -92,28 +92,27 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     pdf.set_font("helvetica", 'B', 12)
     pdf.cell(190, 10, f"Genel Toplam: {total_val:.2f} TL", ln=True, align='R')
     
-    # KRİTİK DÜZELTME: bytearray'i bytes formatına çeviriyoruz
     return bytes(pdf.output())
 
 # --- ARA YÜZ ---
 st.set_page_config(page_title="GEODNET Finans", layout="wide")
-st.title("🛰️ GEODNET Hakediş ve PDF Raporlama")
+st.title("🛰️ GEODNET Hakedis ve PDF Raporlama")
 
 if 'geod_p' not in st.session_state:
     st.session_state.geod_p, st.session_state.usd_t = get_live_prices()
 
 with st.sidebar:
-    st.header("💹 Canlı Kurlar")
+    st.header("💹 Canli Kurlar")
     st.write(f"GEOD/USD: **${st.session_state.geod_p:.4f}**")
     st.write(f"USD/TRY: **{st.session_state.usd_t:.2f}**")
-    if st.button("Kurları Güncelle"):
+    if st.button("Kurlari Guncelle"):
         st.session_state.geod_p, st.session_state.usd_t = get_live_prices()
         st.rerun()
     st.divider()
-    uploaded_file = st.file_uploader("Dosya Yükle", type=['xlsx', 'csv'])
+    uploaded_file = st.file_uploader("Dosya Yukle", type=['xlsx', 'csv'])
     start_date = st.date_input("Baslangic", datetime.now() - timedelta(days=31))
     end_date = st.date_input("Bitis", datetime.now())
-    process_btn = st.button("HESAPLA", type="primary")
+    process_btn = st.button("HESAPLA", type="primary", use_container_width=True)
 
 if process_btn and uploaded_file:
     try:
@@ -123,43 +122,59 @@ if process_btn and uploaded_file:
         results = []
         geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
         p_bar = st.progress(0)
+        status_text = st.empty()
         
         for index, row in input_df.iterrows():
             m_name = str(row['Musteri']).strip()
             sn_no = str(row['SN']).strip()
+            status_text.text(f"Sorgulaniyor: {m_name} - {sn_no}")
             
             raw_data = get_all_rewards(sn_no, start_date, end_date)
             total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
             
+            # --- DETAYLI HESAPLAMALAR ---
             token_25 = total_token * 0.25
             tl_25 = token_25 * geod_tl_rate
+            
+            needs_fix = "EVET" if tl_25 < 500 else "HAYIR"
             fix_tl = max(0, 500 - tl_25)
+            fix_token = fix_tl / geod_tl_rate if geod_tl_rate > 0 else 0
+            
+            total_paid_token = token_25 + fix_token
+            net_us_token = total_token - total_paid_token
             
             results.append({
                 "Musteri": m_name,
                 "SN": sn_no,
                 "Top_GEOD": total_token,
                 "Musteri_Pay_Token": token_25,
-                "Musteri_Toplam_TL": tl_25 + fix_tl
+                "Musteri_Pay_TL": tl_25,
+                "Tamamlama_Gerekiyor": needs_fix,
+                "Tamamlama_TL": fix_tl,
+                "Musteri_Toplam_TL": tl_25 + fix_tl,
+                "Musteri_Odenecek_Toplam_Token": total_paid_token,
+                "Bize_Net_Kalan_Token": net_us_token
             })
             p_bar.progress((index + 1) / len(input_df))
 
+        status_text.success("Hesaplama tamamlandi!")
         res_df = pd.DataFrame(results)
-        st.dataframe(res_df)
         
-        st.subheader("📄 Müşteri PDF Raporları")
+        # --- TABLO GÖSTERİMİ ---
+        st.header("📋 Detayli Cihaz Analizi")
+        st.dataframe(res_df.style.format({
+            "Top_GEOD": "{:.2f}", "Musteri_Pay_Token": "{:.2f}", "Musteri_Pay_TL": "{:.2f} TL",
+            "Tamamlama_TL": "{:.2f} TL", "Musteri_Toplam_TL": "{:.2f} TL", 
+            "Musteri_Odenecek_Toplam_Token": "{:.2f}", "Bize_Net_Kalan_Token": "{:.2f}"
+        }), use_container_width=True)
+        
+        st.divider()
+        st.subheader("📄 Musteri PDF Raporlari")
         cols = st.columns(3)
         for i, m_name in enumerate(res_df['Musteri'].unique()):
             m_data = res_df[res_df['Musteri'] == m_name]
-            # PDF'i bytes olarak alıyoruz
             pdf_bytes = create_pdf(m_name, m_data, st.session_state.geod_p, st.session_state.usd_t, start_date, end_date)
             with cols[i % 3]:
-                st.download_button(
-                    label=f"📥 {m_name} PDF", 
-                    data=pdf_bytes, 
-                    file_name=f"{m_name}_Rapor.pdf", 
-                    mime="application/pdf", 
-                    key=f"p_{i}"
-                )
+                st.download_button(f"📥 {m_name} PDF", data=pdf_bytes, file_name=f"{m_name}_Rapor.pdf", mime="application/pdf", key=f"p_{i}")
     except Exception as e:
         st.error(f"Hata detayi: {e}")
