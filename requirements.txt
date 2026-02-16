@@ -3,4 +3,5 @@ requests
 pycryptodome
 pandas
 openpyxl
-fpdf
+fpdf2
+
