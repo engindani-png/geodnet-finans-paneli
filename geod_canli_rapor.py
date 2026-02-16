@@ -19,7 +19,7 @@ try:
     CLIENT_ID = st.secrets["CLIENT_ID"]
     TOKEN = st.secrets["TOKEN"]
 except:
-    st.error("Secrets bulunamadi! Lutfen Settings > Secrets kismini kontrol edin.")
+    st.error("Secrets bulunamadı! Lütfen Settings > Secrets kısmını kontrol edin.")
     st.stop()
 
 BASE_URL = "https://consoleresapi.geodnet.com"
@@ -94,11 +94,9 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date):
     pdf.cell(190, 10, f"Genel Toplam: {total_val:.2f} TL", ln=True, align='R')
     return bytes(pdf.output())
 
-# --- ARŞİV SİSTEMİ ---
-if 'arsiv' not in st.session_state:
-    st.session_state.arsiv = {}
-if 'last_results' not in st.session_state:
-    st.session_state.last_results = None
+# --- SESSION STATE ---
+if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
+if 'last_results' not in st.session_state: st.session_state.last_results = None
 
 # --- SIDEBAR MENÜ ---
 menu = st.sidebar.selectbox("📂 İşlem Seçiniz", ["📊 Yeni Hesaplama", "📚 Geçmiş Kayıtlar"])
@@ -116,99 +114,109 @@ if menu == "📊 Yeni Hesaplama":
             st.session_state.geod_p, st.session_state.usd_t = get_live_prices()
             st.rerun()
         st.divider()
-        uploaded_file = st.file_uploader("Cihaz Listesini Yükleyin", type=['xlsx', 'csv'])
+        
+        input_type = st.radio("Sorgu Türü", ["Excel Yükle", "Manuel SN Yaz"])
+        
+        if input_type == "Excel Yükle":
+            uploaded_file = st.file_uploader("Dosya Seçin", type=['xlsx', 'csv'])
+        else:
+            m_name_manual = st.text_input("Müşteri Adı", "Tekil Sorgu")
+            sn_manual = st.text_input("Seri Numarası (SN)", "")
+
         start_date = st.date_input("Başlangıç", datetime.now() - timedelta(days=31))
         end_date = st.date_input("Bitiş", datetime.now())
-        kayit_adi = st.text_input("Kayıt İsmi (Örn: Kasım 2025)", "")
+        kayit_adi = st.text_input("Kayıt İsmi (Arşivlemek için)", "")
         process_btn = st.button("HESAPLA", type="primary", use_container_width=True)
 
+    # Kur Gösterimi
     c1, c2 = st.columns(2)
     c1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
     c2.metric("USD / TRY", f"{st.session_state.usd_t:.2f} TL")
 
-    if process_btn and uploaded_file:
-        input_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
-        input_df.columns = ['Musteri', 'SN'] + list(input_df.columns[2:])
-        results = []
-        geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
-        p_bar = st.progress(0)
+    if process_btn:
+        source_df = None
+        if input_type == "Excel Yükle" and uploaded_file:
+            source_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+            source_df.columns = ['Musteri', 'SN'] + list(source_df.columns[2:])
+        elif input_type == "Manuel SN Yaz" and sn_manual:
+            source_df = pd.DataFrame([{'Musteri': m_name_manual, 'SN': sn_manual}])
         
-        for index, row in input_df.iterrows():
-            m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
-            raw_data = get_all_rewards(sn_no, start_date, end_date)
-            total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
-            token_25 = total_token * 0.25
-            tl_25 = token_25 * geod_tl_rate
-            fix_tl = max(0, 500 - tl_25)
-            fix_token = fix_tl / geod_tl_rate if geod_tl_rate > 0 else 0
+        if source_df is not None:
+            results = []
+            geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
+            p_bar = st.progress(0)
             
-            results.append({
-                "Musteri": m_name, "SN": sn_no, "Top_GEOD": total_token,
-                "Musteri_Pay_Token": token_25, "Eklenen_Token_Fix": fix_token,
-                "Musteri_Toplam_TL": tl_25 + fix_tl,
-                "Musteri_Odenecek_Toplam_Token": token_25 + fix_token,
-                "Bize_Net_Kalan_Token": total_token - (token_25 + fix_token)
-            })
-            p_bar.progress((index + 1) / len(input_df))
+            for index, row in source_df.iterrows():
+                m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
+                raw_data = get_all_rewards(sn_no, start_date, end_date)
+                total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
+                token_25 = total_token * 0.25
+                tl_25 = token_25 * geod_tl_rate
+                fix_tl = max(0, 500 - tl_25)
+                fix_token = fix_tl / geod_tl_rate if geod_tl_rate > 0 else 0
+                
+                results.append({
+                    "Musteri": m_name, "SN": sn_no, "Top_GEOD": total_token,
+                    "Musteri_Pay_Token": token_25, "Eklenen_Token_Fix": fix_token,
+                    "Musteri_Toplam_TL": tl_25 + fix_tl,
+                    "Musteri_Odenecek_Toplam_Token": token_25 + fix_token,
+                    "Bize_Net_Kalan_Token": total_token - (token_25 + fix_token)
+                })
+                p_bar.progress((index + 1) / len(source_df))
 
-        final_df = pd.DataFrame(results)
-        
-        # Sonuçları state'e kaydet (ekranda kalması için)
-        st.session_state.last_results = {
-            "df": final_df,
-            "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}",
-            "kur_geod": st.session_state.geod_p,
-            "kur_usd": st.session_state.usd_t
-        }
-        
-        # Eğer bir kayıt ismi girildiyse arşive de ekle
-        if kayit_adi:
-            st.session_state.arsiv[kayit_adi] = st.session_state.last_results
-            st.sidebar.success(f"'{kayit_adi}' arşive kaydedildi!")
+            st.session_state.last_results = {
+                "df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}",
+                "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t
+            }
+            if kayit_adi:
+                st.session_state.arsiv[kayit_adi] = st.session_state.last_results
+                st.sidebar.success(f"'{kayit_adi}' arşive eklendi!")
 
-    # Hesaplama bittiğinde veya daha önceden hesaplanmış veri varsa ekranda göster
     if st.session_state.last_results is not None:
         data = st.session_state.last_results
         df = data["df"]
-        
         st.divider()
         st.header("📊 Güncel Hesaplama Özeti")
         m1, m2, m3 = st.columns(3)
-        m1.metric("Toplam Kazanç (Token)", f"{df['Top_GEOD'].sum():.2f}")
-        m2.metric("Ödenen Toplam (Token)", f"{df['Musteri_Odenecek_Toplam_Token'].sum():.2f}")
-        m3.metric("Bize Kalan Net (Token)", f"{df['Bize_Net_Kalan_Token'].sum():.2f}")
-        
-        st.subheader("📋 Detaylı Analiz")
+        m1.metric("Toplam Kazanç", f"{df['Top_GEOD'].sum():.2f}")
+        m2.metric("Ödenen Toplam", f"{df['Musteri_Odenecek_Toplam_Token'].sum():.2f}")
+        m3.metric("Bize Kalan Net", f"{df['Bize_Net_Kalan_Token'].sum():.2f}")
         st.dataframe(df, use_container_width=True)
-        
-        st.subheader("📄 Müşteri Raporları")
+        st.subheader("📄 Raporlar")
         for i, m_name in enumerate(df['Musteri'].unique()):
             m_data = df[df['Musteri'] == m_name]
             pdf_bytes = create_pdf(m_name, m_data, data["kur_geod"], data["kur_usd"], data["donem"])
             col_a, col_b = st.columns([5, 1])
-            col_a.write(f"📄 **{m_name}** ({len(m_data)} Cihaz)")
-            col_b.download_button("İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"current_{i}")
+            col_a.write(f"📄 **{m_name}**")
+            col_b.download_button("İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"curr_{i}")
 
 # --- GEÇMİŞ KAYITLAR ---
 elif menu == "📚 Geçmiş Kayıtlar":
     st.title("📚 Finansal Arşiv")
     if not st.session_state.arsiv:
-        st.info("Henüz bir kayıt bulunmamaktadır. Lütfen 'Yeni Hesaplama' sayfasından bir kayıt ismiyle hesaplama yapın.")
+        st.info("Henüz kayıt bulunmuyor.")
     else:
-        selected = st.selectbox("Görüntülenecek Dönem Seçin", list(st.session_state.arsiv.keys()))
-        data = st.session_state.arsiv[selected]
-        df = data["df"]
+        col_sel, col_del = st.columns([4, 1])
+        with col_sel:
+            selected = st.selectbox("Dönem Seçin", list(st.session_state.arsiv.keys()))
+        with col_del:
+            st.write(" ") # Hizalama için
+            if st.button("🗑️ BU KAYDI SİL", type="secondary", use_container_width=True):
+                del st.session_state.arsiv[selected]
+                st.success(f"'{selected}' başarıyla silindi.")
+                st.rerun()
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Toplam Kazanç", f"{df['Top_GEOD'].sum():.2f}")
-        m2.metric("Ödenen Toplam", f"{df['Musteri_Odenecek_Toplam_Token'].sum():.2f}")
-        m3.metric("Bize Kalan Net", f"{df['Bize_Net_Kalan_Token'].sum():.2f}")
-
-        st.divider()
-        st.subheader("📋 Müşteri Raporları Listesi")
-        for i, m_name in enumerate(df['Musteri'].unique()):
-            m_data = df[df['Musteri'] == m_name]
-            pdf_bytes = create_pdf(m_name, m_data, data["kur_geod"], data["kur_usd"], data["donem"])
-            col_a, col_b = st.columns([5, 1])
-            col_a.write(f"📄 **{m_name}** ({len(m_data)} Cihaz)")
-            col_b.download_button("İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"hist_{i}")
+        if selected in st.session_state.arsiv:
+            data = st.session_state.arsiv[selected]
+            df = data["df"]
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Toplam Kazanç", f"{df['Top_GEOD'].sum():.2f}")
+            m2.metric("Ödenen Toplam", f"{df['Musteri_Odenecek_Toplam_Token'].sum():.2f}")
+            m3.metric("Bize Kalan Net", f"{df['Bize_Net_Kalan_Token'].sum():.2f}")
+            st.divider()
+            for i, m_name in enumerate(df['Musteri'].unique()):
+                m_data = df[df['Musteri'] == m_name]
+                pdf_bytes = create_pdf(m_name, m_data, data["kur_geod"], data["kur_usd"], data["donem"])
+                col_a, col_b = st.columns([5, 1])
+                col_a.write(f"📄 **{m_name}**")
+                col_b.download_button("İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"hist_{i}")
