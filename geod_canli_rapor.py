@@ -75,17 +75,20 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     pdf.set_fill_color(230, 230, 230)
     pdf.set_font("helvetica", 'B', 10)
     pdf.cell(50, 10, "Cihaz SN", 1, 0, 'C', True)
-    pdf.cell(40, 10, "Top. GEOD", 1, 0, 'C', True)
-    pdf.cell(45, 10, "Pay (25%)", 1, 0, 'C', True)
-    pdf.cell(55, 10, "Toplam Tutar (TL)", 1, 1, 'C', True)
+    pdf.cell(35, 10, "Top. GEOD", 1, 0, 'C', True)
+    pdf.cell(35, 10, "Pay (25%)", 1, 0, 'C', True)
+    pdf.cell(35, 10, "Kur (TL)", 1, 0, 'C', True)
+    pdf.cell(35, 10, "Toplam (TL)", 1, 1, 'C', True)
     
     pdf.set_font("helvetica", '', 10)
     total_val = 0
+    geod_tl = g_price * u_try
     for _, row in data_df.iterrows():
         pdf.cell(50, 10, str(row['SN']), 1)
-        pdf.cell(40, 10, f"{row['Top_GEOD']:.2f}", 1, 0, 'C')
-        pdf.cell(45, 10, f"{row['Musteri_Pay_Token']:.2f}", 1, 0, 'C')
-        pdf.cell(55, 10, f"{row['Musteri_Toplam_TL']:.2f} TL", 1, 1, 'C')
+        pdf.cell(35, 10, f"{row['Top_GEOD']:.2f}", 1, 0, 'C')
+        pdf.cell(35, 10, f"{row['Musteri_Pay_Token']:.2f}", 1, 0, 'C')
+        pdf.cell(35, 10, f"{geod_tl:.2f}", 1, 0, 'C')
+        pdf.cell(35, 10, f"{row['Musteri_Toplam_TL']:.2f} TL", 1, 1, 'C')
         total_val += row['Musteri_Toplam_TL']
     
     pdf.ln(5)
@@ -94,7 +97,7 @@ def create_pdf(musteri_adi, data_df, g_price, u_try, s_date, e_date):
     
     return bytes(pdf.output())
 
-# --- ARA YÜZ ---
+# --- ARA YUZ ---
 st.set_page_config(page_title="GEODNET Finans", layout="wide")
 st.title("🛰️ GEODNET Hakedis ve PDF Raporlama")
 
@@ -160,7 +163,7 @@ if process_btn and uploaded_file:
         status_text.success("Hesaplama tamamlandi!")
         res_df = pd.DataFrame(results)
         
-        # --- TABLO GÖSTERİMİ ---
+        # --- TABLO GOSTERIMI ---
         st.header("📋 Detayli Cihaz Analizi")
         st.dataframe(res_df.style.format({
             "Top_GEOD": "{:.2f}", "Musteri_Pay_Token": "{:.2f}", "Musteri_Pay_TL": "{:.2f} TL",
