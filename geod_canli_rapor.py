@@ -81,14 +81,14 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.set_font("helvetica", 'B', 8)
     pdf.cell(40, 10, "Miner No", 1, 0, 'C', True)
     pdf.cell(20, 10, "Pay (%)", 1, 0, 'C', True)
-    pdf.cell(30, 10, "Top. Uretim(T)", 1, 0, 'C', True)
+    pdf.cell(30, 10, "Top. Uretim", 1, 0, 'C', True)
     pdf.cell(30, 10, "Token Hakedis", 1, 0, 'C', True)
     pdf.cell(35, 10, "Hakedis (USDT)", 1, 0, 'C', True)
     pdf.cell(35, 10, "Hakedis (TL)", 1, 1, 'C', True)
     pdf.set_font("helvetica", '', 8)
     for _, row in data_df.iterrows():
         pdf.cell(40, 10, str(row['SN']), 1)
-        pdf.cell(20, 10, f"%{row['Pay_Orani']*100:.0f}", 1, 0, 'C')
+        pdf.cell(20, 10, f"{row['Pay_Orani_Str']}", 1, 0, 'C')
         pdf.cell(30, 10, f"{row['Toplam_Uretim']:.2f}", 1, 0, 'C')
         pdf.cell(30, 10, f"{row['Token_Hakedis']:.2f}", 1, 0, 'C')
         pdf.cell(35, 10, f"${row['Hakedis_USDT']:.2f}", 1, 0, 'C')
@@ -154,13 +154,16 @@ with st.sidebar:
                     hakedis_usdt = ortak_pay_token * st.session_state.geod_p
                     hakedis_tl = ortak_pay_token * geod_tl_rate
                     
+                    # Sütun isimlerini İNGİLİZCE karakterlerle sabitliyoruz (KeyError önleme)
                     results.append({
-                        "İş Ortağı": m_name, "SN": sn_no, "Pay %": f"{kp_rate*100:.0f}%",
-                        "Toplam Üretim": total_token,
-                        "Token Hakedis": ortak_pay_token,
-                        "Hakediş (USDT)": hakedis_usdt,
-                        "Hakediş (TL)": hakedis_tl,
-                        "Net Kalan": total_token - ortak_pay_token
+                        "Is_Ortagi": m_name, 
+                        "SN": sn_no, 
+                        "Pay_Orani_Str": f"%{kp_rate*100:.0f}",
+                        "Toplam_Uretim": total_token,
+                        "Token_Hakedis": ortak_pay_token,
+                        "Hakedis_USDT": hakedis_usdt,
+                        "Hakedis_TL": hakedis_tl,
+                        "Net_Kalan": total_token - ortak_pay_token
                     })
                     p_bar.progress((index + 1) / len(source_df))
                 
@@ -188,21 +191,31 @@ if st.session_state.last_results:
     res = st.session_state.last_results
     df = res["df"]
     
-    # Yönetim Özeti
+    # Yönetim Özeti (Sütun isimleri İngilizce yapıldığı için artık hata vermez)
     sm1, sm2, sm3 = st.columns(3)
-    sm1.metric("Toplam Üretim (T)", f"{df['Toplam Üretim'].sum():.2f}")
-    sm2.metric("Hakediş Toplamı (T)", f"{df['Token Hakedis'].sum():.2f}")
-    sm3.metric("Bize Kalan (T)", f"{df['Net Kalan'].sum():.2f}")
+    sm1.metric("Toplam Uretim (T)", f"{df['Toplam_Uretim'].sum():.2f}")
+    sm2.metric("Hakedis Toplami (T)", f"{df['Token_Hakedis'].sum():.2f}")
+    sm3.metric("Bize Kalan (T)", f"{df['Net_Kalan'].sum():.2f}")
     
-    # Tablo Gösterimi ve Sütun Düzenleme
-    st.dataframe(df.style.format({
+    # Tablo Gösterimi - Sütun isimlerini kullanıcıya Türkçe gösterelim
+    display_df = df.rename(columns={
+        "Is_Ortagi": "İş Ortağı",
+        "Pay_Orani_Str": "Pay %",
+        "Toplam_Uretim": "Toplam Üretim",
+        "Token_Hakedis": "Token Hakediş",
+        "Hakedis_USDT": "Hakediş (USDT)",
+        "Hakedis_TL": "Hakediş (TL)",
+        "Net_Kalan": "Net Kalan"
+    })
+
+    st.dataframe(display_df.style.format({
         "Hakediş (USDT)": "{:.2f} $", "Hakediş (TL)": "{:.2f} TL", 
-        "Toplam Üretim": "{:.2f}", "Token Hakedis": "{:.2f}", "Net Kalan": "{:.2f}"
+        "Toplam Üretim": "{:.2f}", "Token Hakediş": "{:.2f}", "Net Kalan": "{:.2f}"
     }), use_container_width=True)
     
     st.subheader("📥 Raporlar")
-    for i, m_name in enumerate(df['İş Ortağı'].unique()):
-        m_data = df[df['İş Ortağı'] == m_name]
+    for i, m_name in enumerate(df['Is_Ortagi'].unique()):
+        m_data = df[df['Is_Ortagi'] == m_name]
         pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
         col_m, col_b = st.columns([4, 1])
         col_m.write(f"📄 {m_name}")
