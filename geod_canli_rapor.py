@@ -13,7 +13,7 @@ import warnings
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="MonsPro | Finansal Portal", layout="wide")
 
-# --- 1. DİNAMİK SELAMLAMA ---
+# --- 1. SELAMLAMA ---
 def get_greeting():
     hour = datetime.now().hour
     if 5 <= hour < 12: greet = "Gunaydin"
@@ -77,25 +77,22 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(95, 8, f"Donem: {s_date}", ln=True, align='R')
     pdf.cell(190, 8, f"Anlik GEOD: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
-    
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("helvetica", 'B', 8)
     pdf.cell(40, 10, "Miner No", 1, 0, 'C', True)
     pdf.cell(20, 10, "Pay (%)", 1, 0, 'C', True)
     pdf.cell(30, 10, "Top. Uretim(T)", 1, 0, 'C', True)
-    pdf.cell(30, 10, "Ortak Payi(T)", 1, 0, 'C', True)
+    pdf.cell(30, 10, "Token Hakedis", 1, 0, 'C', True)
     pdf.cell(35, 10, "Hakedis (USDT)", 1, 0, 'C', True)
     pdf.cell(35, 10, "Hakedis (TL)", 1, 1, 'C', True)
-    
     pdf.set_font("helvetica", '', 8)
     for _, row in data_df.iterrows():
         pdf.cell(40, 10, str(row['SN']), 1)
         pdf.cell(20, 10, f"%{row['Pay_Orani']*100:.0f}", 1, 0, 'C')
         pdf.cell(30, 10, f"{row['Toplam_Uretim']:.2f}", 1, 0, 'C')
-        pdf.cell(30, 10, f"{row['Ortak_Pay_Token']:.2f}", 1, 0, 'C')
+        pdf.cell(30, 10, f"{row['Token_Hakedis']:.2f}", 1, 0, 'C')
         pdf.cell(35, 10, f"${row['Hakedis_USDT']:.2f}", 1, 0, 'C')
         pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, 'C')
-    
     pdf.ln(5)
     pdf.set_font("helvetica", 'B', 11)
     pdf.cell(190, 10, f"Toplam Odenecek: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align='R')
@@ -158,12 +155,12 @@ with st.sidebar:
                     hakedis_tl = ortak_pay_token * geod_tl_rate
                     
                     results.append({
-                        "Musteri": m_name, "SN": sn_no, "Pay_Orani": kp_rate,
-                        "Toplam_Uretim": total_token,
-                        "Ortak_Pay_Token": ortak_pay_token,
-                        "Hakedis_USDT": hakedis_usdt,
-                        "Hakedis_TL": hakedis_tl,
-                        "MonsPro_Net_Kalan_Token": total_token - ortak_pay_token
+                        "İş Ortağı": m_name, "SN": sn_no, "Pay %": f"{kp_rate*100:.0f}%",
+                        "Toplam Üretim": total_token,
+                        "Token Hakedis": ortak_pay_token,
+                        "Hakediş (USDT)": hakedis_usdt,
+                        "Hakediş (TL)": hakedis_tl,
+                        "Net Kalan": total_token - ortak_pay_token
                     })
                     p_bar.progress((index + 1) / len(source_df))
                 
@@ -193,18 +190,19 @@ if st.session_state.last_results:
     
     # Yönetim Özeti
     sm1, sm2, sm3 = st.columns(3)
-    sm1.metric("Toplam Uretim (Token)", f"{df['Toplam_Uretim'].sum():.2f}")
-    sm2.metric("Ortaklara Odenen (Token)", f"{df['Ortak_Pay_Token'].sum():.2f}")
-    sm3.metric("MonsPro Kalan (Token)", f"{df['MonsPro_Net_Kalan_Token'].sum():.2f}")
+    sm1.metric("Toplam Üretim (T)", f"{df['Toplam Üretim'].sum():.2f}")
+    sm2.metric("Hakediş Toplamı (T)", f"{df['Token Hakedis'].sum():.2f}")
+    sm3.metric("Bize Kalan (T)", f"{df['Net Kalan'].sum():.2f}")
     
+    # Tablo Gösterimi ve Sütun Düzenleme
     st.dataframe(df.style.format({
-        "Hakedis_USDT": "{:.2f} $", "Hakedis_TL": "{:.2f} TL", 
-        "Toplam_Uretim": "{:.2f}", "Ortak_Pay_Token": "{:.2f}", "MonsPro_Net_Kalan_Token": "{:.2f}"
+        "Hakediş (USDT)": "{:.2f} $", "Hakediş (TL)": "{:.2f} TL", 
+        "Toplam Üretim": "{:.2f}", "Token Hakedis": "{:.2f}", "Net Kalan": "{:.2f}"
     }), use_container_width=True)
     
     st.subheader("📥 Raporlar")
-    for i, m_name in enumerate(df['Musteri'].unique()):
-        m_data = df[df['Musteri'] == m_name]
+    for i, m_name in enumerate(df['İş Ortağı'].unique()):
+        m_data = df[df['İş Ortağı'] == m_name]
         pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
         col_m, col_b = st.columns([4, 1])
         col_m.write(f"📄 {m_name}")
