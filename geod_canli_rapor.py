@@ -14,7 +14,7 @@ import warnings
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
-# --- 1. YARDIMCI FONKSİYONLAR ---
+# --- 1. FONKSİYONLAR ---
 def temizle(text):
     if text is None: return ""
     mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
@@ -88,7 +88,6 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     return bytes(pdf.output())
 
 def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
-    # PDF İBARESİ TAMAMEN KALDIRILDI
     msg = f"*📄 MonsPro GEODNET Hakedis Raporu*\n"
     msg += f"━━━━━━━━━━━━━━━━━━━\n"
     msg += f"*👤 Is Ortagi:* {temizle(m_name)}\n"
@@ -245,12 +244,12 @@ if st.session_state.last_results:
         col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
         
         if tel and tel not in ["", "nan", "None", "90"]:
-            # 404 HATASINI ÖNLEYEN YENİ URL FORMATI
+            # MASAÜSTÜ WHATSAPP UYGULAMASINI TETİKLEYEN PROTOKOL
             msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
             encoded_msg = urllib.parse.quote(msg_text)
-            # Web WhatsApp send protokolü
-            wp_url = f"https://web.whatsapp.com/send?phone={tel}&text={encoded_msg}"
+            # 'whatsapp://' masaüstü uygulamasını açmaya çalışır
+            wp_app_url = f"whatsapp://send?phone={tel}&text={encoded_msg}"
             
-            col_w.markdown(f'<a href="{wp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 WP Gönder</button></a>', unsafe_allow_html=True)
+            col_w.markdown(f'<a href="{wp_app_url}"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 Uygulama Aç</button></a>', unsafe_allow_html=True)
         else:
             col_w.markdown(f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>', unsafe_allow_html=True)
