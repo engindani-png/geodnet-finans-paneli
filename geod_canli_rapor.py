@@ -67,29 +67,30 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.set_font("helvetica", '', 10)
     pdf.ln(5)
     pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
-    pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
-    pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
+    pdf.cell(95, 8, f"Donem: {s_date}", ln=True, align='R')
     pdf.cell(190, 8, f"Anlik GEOD: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
     pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("helvetica", 'B', 8)
-    pdf.cell(35, 10, "Miner No", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Uretim(T)", 1, 0, 'C', True)
-    pdf.cell(20, 10, "Durum", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Hak(T)", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Fix(T)", 1, 0, 'C', True)
-    pdf.cell(30, 10, "Toplam(TL)", 1, 1, 'C', True)
-    pdf.set_font("helvetica", '', 8)
+    pdf.set_font("helvetica", 'B', 7)
+    pdf.cell(30, 10, "Miner No", 1, 0, 'C', True)
+    pdf.cell(20, 10, "Kazanc", 1, 0, 'C', True)
+    pdf.cell(25, 10, "Durum", 1, 0, 'C', True)
+    pdf.cell(25, 10, "Hakedis", 1, 0, 'C', True)
+    pdf.cell(25, 10, "Eklenen", 1, 0, 'C', True)
+    pdf.cell(30, 10, "Top.GEOD", 1, 0, 'C', True)
+    pdf.cell(35, 10, "Tutar(TL)", 1, 1, 'C', True)
+    pdf.set_font("helvetica", '', 7)
     for _, row in data_df.iterrows():
-        pdf.cell(35, 10, str(row['SN']), 1)
-        pdf.cell(25, 10, f"{row['Toplam_Uretim']:.2f}", 1)
-        pdf.cell(20, 10, row['Durum_Etiket'], 1, 0, 'C')
-        pdf.cell(25, 10, f"{row['Token_Hakedis'] - row['Eklenen_Token']:.2f}", 1)
-        pdf.cell(25, 10, f"{row['Eklenen_Token']:.2f}", 1)
-        pdf.cell(30, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, 'C')
-    pdf.ln(10)
-    pdf.set_font("helvetica", 'B', 11)
-    pdf.cell(190, 10, f"Toplam Odenecek: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align='R')
+        pdf.cell(30, 10, str(row['SN']), 1)
+        pdf.cell(20, 10, f"{row['Toplam_GEOD_Kazanc']:.2f}", 1)
+        pdf.cell(25, 10, row['Durum_Etiket'], 1, 0, 'C')
+        pdf.cell(25, 10, f"{row['Hakedis_Baz']:.2f}", 1)
+        pdf.cell(25, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
+        pdf.cell(30, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
+        pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, 'C')
+    pdf.ln(5)
+    pdf.set_font("helvetica", 'B', 10)
+    pdf.cell(190, 10, f"Genel Toplam: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align='R')
     return bytes(pdf.output())
 
 # --- 3. SESSION STATE ---
@@ -109,7 +110,6 @@ with st.sidebar:
     if menu == "📊 Yeni Sorgu":
         target_tl = st.number_input("Tamamlanacak TL Tutarı", min_value=0, value=500, step=50)
         input_type = st.radio("Yöntem", ["Excel Yükle", "Manuel SN"])
-        
         if input_type == "Excel Yükle":
             uploaded_file = st.file_uploader("Excel Yukle", type=['xlsx'])
         else:
@@ -137,35 +137,31 @@ with st.sidebar:
                     m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
                     kp_raw = float(row['Kar_Payi'])
                     kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
-                    
                     raw_data = get_all_rewards(sn_no, start_date, end_date)
                     total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
                     
-                    # --- AKILLI HESAPLAMA MANTIĞI ---
                     mevcut_pay_token = total_token * kp_rate
                     mevcut_tl = mevcut_pay_token * geod_tl_rate
-                    eklenen_token = 0
+                    eklenen_geod = 0
                     
                     if total_token < 180:
-                        token_hakedis = mevcut_pay_token
-                        durum_etiket = "AZ"
+                        geod_hakedis = mevcut_pay_token
+                        durum_etiket = "AZ ÜRETİM"
                     else:
                         if mevcut_tl < target_tl:
-                            # 180 üstü ve hedefin altında ise tamamlama yap
                             eksik_tl = target_tl - mevcut_tl
-                            eklenen_token = eksik_tl / geod_tl_rate if geod_tl_rate > 0 else 0
-                            token_hakedis = mevcut_pay_token + eklenen_token
-                            durum_etiket = "FIX"
+                            eklenen_geod = eksik_tl / geod_tl_rate if geod_tl_rate > 0 else 0
+                            geod_hakedis = mevcut_pay_token + eklenen_geod
+                            durum_etiket = "DESTEKLENDI"
                         else:
-                            # 180 üstü ama zaten hedeften fazla kazanmışsa ekleme yapma
-                            token_hakedis = mevcut_pay_token
-                            durum_etiket = "OK"
+                            geod_hakedis = mevcut_pay_token
+                            durum_etiket = "TAM KAZANC"
 
                     results.append({
-                        "Is_Ortagi": m_name, "SN": sn_no, "Toplam_Uretim": total_token,
-                        "Pay_Orani": kp_rate, "Token_Hakedis": token_hakedis,
-                        "Eklenen_Token": eklenen_token, "Hakedis_TL": token_hakedis * geod_tl_rate,
-                        "Net_Kalan": total_token - token_hakedis, "Durum_Etiket": durum_etiket
+                        "Is_Ortagi": m_name, "SN": sn_no, "Toplam_GEOD_Kazanc": total_token,
+                        "Hakedis_Baz": mevcut_pay_token, "EKLENEN_GEOD": eklenen_geod,
+                        "GEOD_HAKEDIS": geod_hakedis, "Hakedis_TL": geod_hakedis * geod_tl_rate,
+                        "MONSPRO_KAZANC": total_token - geod_hakedis, "Durum_Etiket": durum_etiket
                     })
                     p_bar.progress((index + 1) / len(source_df))
                 
@@ -187,13 +183,16 @@ if st.session_state.last_results:
     
     st.header(f"📋 Hakediş Detayları (Hedef: {res['target']} TL)")
     
-    # Renklendirme: 180 Altı Sarı
-    def highlight_low(row):
-        return ['background-color: #ffffcc' if row.Toplam_Uretim < 180 else '' for _ in row]
+    # Renklendirme Fonksiyonu (Sarı Arkaplan, Lacivert Font)
+    def style_rows(row):
+        if row.Toplam_GEOD_Kazanc < 180:
+            return ['background-color: #ffffcc; color: #000080; font-weight: bold'] * len(row)
+        return [''] * len(row)
 
-    st.dataframe(df.style.apply(highlight_low, axis=1).format({
-        "Hakedis_TL": "{:.2f} TL", "Toplam_Uretim": "{:.2f}", 
-        "Token_Hakedis": "{:.2f}", "Eklenen_Token": "{:.2f}", "Net_Kalan": "{:.2f}"
+    st.dataframe(df.style.apply(style_rows, axis=1).format({
+        "Hakedis_TL": "{:.2f} TL", "Toplam_GEOD_Kazanc": "{:.2f}", 
+        "Hakedis_Baz": "{:.2f}", "EKLENEN_GEOD": "{:.2f}", 
+        "GEOD_HAKEDIS": "{:.2f}", "MONSPRO_KAZANC": "{:.2f}"
     }), use_container_width=True)
     
     st.subheader("📥 Raporlar")
