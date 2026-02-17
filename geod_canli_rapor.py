@@ -25,7 +25,10 @@ def get_greeting():
 # --- 2. YARDIMCI FONKSİYONLAR ---
 def temizle(text):
     if text is None: return ""
-    mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
+    mapping = {
+        "ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", 
+        "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"
+    }
     for key, val in mapping.items():
         text = str(text).replace(key, val)
     return text
@@ -67,9 +70,11 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.set_font("helvetica", '', 10)
     pdf.ln(5)
     pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
-    pdf.cell(95, 8, f"Donem: {s_date}", ln=True, align='R')
+    pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
+    pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
     pdf.cell(190, 8, f"Anlik GEOD: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
+    
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("helvetica", 'B', 7)
     pdf.cell(30, 10, "Miner No", 1, 0, 'C', True)
@@ -79,15 +84,18 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(25, 10, "Eklenen", 1, 0, 'C', True)
     pdf.cell(30, 10, "Top.GEOD", 1, 0, 'C', True)
     pdf.cell(35, 10, "Tutar(TL)", 1, 1, 'C', True)
+    
     pdf.set_font("helvetica", '', 7)
     for _, row in data_df.iterrows():
         pdf.cell(30, 10, str(row['SN']), 1)
         pdf.cell(20, 10, f"{row['Toplam_GEOD_Kazanc']:.2f}", 1)
-        pdf.cell(25, 10, row['Durum_Etiket'], 1, 0, 'C')
+        # DURUM ETİKETİNİ TEMİZLEYEREK YAZDIRIYORUZ (HATA ÇÖZÜMÜ)
+        pdf.cell(25, 10, temizle(row['Durum_Etiket']), 1, 0, 'C')
         pdf.cell(25, 10, f"{row['Hakedis_Baz']:.2f}", 1)
         pdf.cell(25, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
         pdf.cell(30, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
         pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, 'C')
+    
     pdf.ln(5)
     pdf.set_font("helvetica", 'B', 10)
     pdf.cell(190, 10, f"Genel Toplam: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align='R')
@@ -146,7 +154,7 @@ with st.sidebar:
                     
                     if total_token < 180:
                         geod_hakedis = mevcut_pay_token
-                        durum_etiket = "AZ ÜRETİM"
+                        durum_etiket = "AZ URETIM"
                     else:
                         if mevcut_tl < target_tl:
                             eksik_tl = target_tl - mevcut_tl
@@ -183,7 +191,6 @@ if st.session_state.last_results:
     
     st.header(f"📋 Hakediş Detayları (Hedef: {res['target']} TL)")
     
-    # Renklendirme Fonksiyonu (Sarı Arkaplan, Lacivert Font)
     def style_rows(row):
         if row.Toplam_GEOD_Kazanc < 180:
             return ['background-color: #ffffcc; color: #000080; font-weight: bold'] * len(row)
