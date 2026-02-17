@@ -88,6 +88,7 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     return bytes(pdf.output())
 
 def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
+    # PDF İBARESİ TAMAMEN KALDIRILDI
     msg = f"*📄 MonsPro GEODNET Hakedis Raporu*\n"
     msg += f"━━━━━━━━━━━━━━━━━━━\n"
     msg += f"*👤 Is Ortagi:* {temizle(m_name)}\n"
@@ -104,7 +105,6 @@ def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
     msg += f"━━━━━━━━━━━━━━━━━━━\n"
     msg += f"*💳 TOPLAM ODEME: {m_data['Hakedis_TL'].sum():.2f} TL*\n"
     msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += f"ℹ️ _Detayli PDF raporunuz ekte sunulmustur._\n"
     msg += f"🚀 *MonsPro Team*"
     return msg
 
@@ -192,7 +192,7 @@ with st.sidebar:
                 st.session_state.last_results = {
                     "df": pd.DataFrame(results), 
                     "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}",
-                    "ay": start_date.strftime("%B %Y"), # Ay bilgisi
+                    "ay": start_date.strftime("%B %Y"), 
                     "kur_geod": st.session_state.geod_p, 
                     "kur_usd": st.session_state.usd_t, 
                     "target": target_tl
@@ -212,23 +212,16 @@ if st.session_state.last_results:
     res = st.session_state.last_results
     df = res["df"]
     
-    # --- YÖNETİM ÖZETİ (TABLO ÜSTÜ) ---
     st.subheader("📊 Dönem Finansal Özeti")
     col_a, col_b, col_c, col_d = st.columns(4)
-    
-    with col_a:
-        st.info(f"📅 **Hesap Dönemi:**\n\n{res['ay']}")
-    with col_b:
-        st.success(f"🛰️ **Total GEOD Kazancı:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
-    with col_c:
-        st.warning(f"💸 **Total İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
-    with col_d:
-        st.error(f"📈 **Monspor Net GEOD Kazancı:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
+    with col_a: st.info(f"📅 **Hesap Dönemi:**\n\n{res['ay']}")
+    with col_b: st.success(f"🛰️ **Total GEOD Kazancı:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
+    with col_c: st.warning(f"💸 **Total İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
+    with col_d: st.error(f"📈 **Monspor Net GEOD Kazancı:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
     
     st.divider()
     st.header(f"📋 Hakediş Detayları (Hedef: {res['target']} TL)")
     
-    # Stil: 180 Altı Sarı Arkaplan + Lacivert Font
     def style_rows(row):
         if row.Toplam_GEOD_Kazanc < 180:
             return ['background-color: #ffffcc; color: #000080; font-weight: bold'] * len(row)
@@ -243,7 +236,7 @@ if st.session_state.last_results:
     st.subheader("📲 Rapor Gönderim ve İndirme")
     for i, m_name in enumerate(df['Is_Ortagi'].unique()):
         m_data = df[df['Is_Ortagi'] == m_name]
-        tel = m_data['Telefon'].iloc[0]
+        tel = str(m_data['Telefon'].iloc[0]).strip()
         
         col_m, col_p, col_w = st.columns([3, 1, 1])
         col_m.write(f"👤 **{m_name}**")
@@ -251,9 +244,13 @@ if st.session_state.last_results:
         pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
         col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
         
-        if tel and str(tel).strip() not in ["", "nan", "None", "90"]:
+        if tel and tel not in ["", "nan", "None", "90"]:
+            # 404 HATASINI ÖNLEYEN YENİ URL FORMATI
             msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
-            wp_url = f"https://wa.me/{tel}?text={urllib.parse.quote(msg_text)}"
+            encoded_msg = urllib.parse.quote(msg_text)
+            # Web WhatsApp send protokolü
+            wp_url = f"https://web.whatsapp.com/send?phone={tel}&text={encoded_msg}"
+            
             col_w.markdown(f'<a href="{wp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 WP Gönder</button></a>', unsafe_allow_html=True)
         else:
             col_w.markdown(f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>', unsafe_allow_html=True)
