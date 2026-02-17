@@ -14,21 +14,13 @@ import warnings
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
-# --- 1. SADELEŞTİRİLMİŞ SELAMLAMA ---
-def get_greeting():
-    return "🚀 MonsPro Team Hoşgeldiniz."
-
-# --- 2. DİNAMİK API KONTROLÜ (GERÇEK ZAMANLI) ---
-def check_api_connection():
-    """Sistemin ihtiyaç duyduğu API servislerini kontrol eder."""
-    try:
-        # Önce kur servisini kontrol et
-        res = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=3)
-        if res.status_code == 200:
-            return True
-        return False
-    except:
-        return False
+# --- 1. YARDIMCI FONKSİYONLAR ---
+def temizle(text):
+    if text is None: return ""
+    mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
+    for key, val in mapping.items():
+        text = str(text).replace(key, val)
+    return text
 
 def get_live_prices():
     try:
@@ -38,14 +30,6 @@ def get_live_prices():
         return geod_p, usd_t
     except:
         return 0.1500, 33.00
-
-# --- 3. YARDIMCI FONKSİYONLAR ---
-def temizle(text):
-    if text is None: return ""
-    mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
-    for key, val in mapping.items():
-        text = str(text).replace(key, val)
-    return text
 
 def encrypt_param(data, key):
     k_fixed = str(key).rjust(16, '0')[:16].encode('utf-8')
@@ -85,8 +69,8 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(30, 10, "Miner No", 1, 0, 'C', True)
     pdf.cell(20, 10, "Kazanc", 1, 0, 'C', True)
     pdf.cell(25, 10, "Durum", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Hak(T)", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Destek(T)", 1, 0, 'C', True)
+    pdf.cell(25, 10, "Hakedis", 1, 0, 'C', True)
+    pdf.cell(25, 10, "Eklenen", 1, 0, 'C', True)
     pdf.cell(30, 10, "Top.GEOD", 1, 0, 'C', True)
     pdf.cell(35, 10, "Tutar(TL)", 1, 1, 'C', True)
     pdf.set_font("helvetica", '', 7)
@@ -124,18 +108,15 @@ def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
     msg += f"🚀 *MonsPro Team*"
     return msg
 
-# --- 4. SESSION STATE ---
+# --- 2. SESSION STATE ---
 if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
+if 'geod_p' not in st.session_state:
+    g_val, u_val = get_live_prices()
+    st.session_state.geod_p = g_val
+    st.session_state.usd_t = u_val
 
-# --- 5. FİYAT VE BAĞLANTI KONTROLÜ ---
-is_connected = check_api_connection()
-if 'geod_p' not in st.session_state or is_connected:
-    geod_v, usd_v = get_live_prices()
-    st.session_state.geod_p = geod_v
-    st.session_state.usd_t = usd_v
-
-# --- 6. SIDEBAR ---
+# --- 3. SIDEBAR ---
 with st.sidebar:
     st.markdown("<h1 style='color: #FF4B4B;'>🛰️ MonsPro</h1>", unsafe_allow_html=True)
     menu = st.radio("Menü Seçimi", ["📊 Yeni Sorgu", "📚 Arşiv"])
@@ -148,32 +129,36 @@ with st.sidebar:
     if menu == "📊 Yeni Sorgu":
         target_tl = st.number_input("Tamamlanacak TL Tutarı", min_value=0, value=500, step=50)
         input_type = st.radio("Yöntem", ["Excel Yükle", "Manuel SN"])
+        
+        today = datetime.now()
+        first_day_of_month = today.replace(day=1)
+        start_date = st.date_input("Başlangıç Tarihi", value=first_day_of_month)
+        end_date = st.date_input("Bitiş Tarihi", value=today)
+        
         if input_type == "Excel Yükle":
             uploaded_file = st.file_uploader("Excel Yukle", type=['xlsx'])
         else:
             m_manual = st.text_input("Is Ortagi Adi", "Ozel Sorgu")
             sn_manual = st.text_input("Miner Numarasi (SN)")
             kp_manual = st.number_input("Kar Payi Orani (%)", min_value=1, max_value=100, value=25)
-            tel_manual = st.text_input("Telefon (905...)", "90")
+            tel_manual = st.text_input("Telefon (905...)", "")
             
-        start_date = st.date_input("Baslangic", datetime.now() - timedelta(days=31))
-        end_date = st.date_input("Bitis", datetime.now())
-        kayit_adi = st.text_input("Arsiv Ismi", value=datetime.now().strftime("%d.%m.%Y %H:%M"))
+        kayit_adi = st.text_input("Arsiv Ismi", value=today.strftime("%d.%m.%Y %H:%M"))
         
         if st.button("HESAPLA", type="primary", use_container_width=True):
             source_df = None
             if input_type == "Excel Yükle" and uploaded_file:
                 df_raw = pd.read_excel(uploaded_file)
-                source_df = pd.DataFrame({'Musteri': df_raw['İş Ortağı'], 'SN': df_raw['Miner Numarası'], 'Kar_Payi': df_raw['Kar Payı'], 'Telefon': df_raw.get('Telefon', '90')})
+                source_df = pd.DataFrame({'Musteri': df_raw['İş Ortağı'], 'SN': df_raw['Miner Numarası'], 'Kar_Payi': df_raw['Kar Payı'], 'Telefon': df_raw.get('Telefon', None)})
             elif input_type == "Manuel SN" and sn_manual:
-                source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100, 'Telefon': tel_manual}])
+                source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100, 'Telefon': tel_manual if tel_manual else None}])
             
             if source_df is not None:
                 results = []
                 geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
                 p_bar = st.progress(0)
                 for index, row in source_df.iterrows():
-                    m_name, sn_no, tel = str(row['Musteri']).strip(), str(row['SN']).strip(), str(row['Telefon']).strip()
+                    m_name, sn_no, tel = str(row['Musteri']).strip(), str(row['SN']).strip(), row['Telefon']
                     kp_raw = float(row['Kar_Payi'])
                     kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
                     raw_data = get_all_rewards(sn_no, start_date, end_date)
@@ -207,21 +192,8 @@ with st.sidebar:
                 st.session_state.last_results = {"df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t, "target": target_tl}
                 if kayit_adi: st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
-    # --- DİNAMİK BAĞLANTI GÖSTERGESİ ---
-    status_color = "#28A745" if is_connected else "#FF4B4B"
-    status_text = "BAĞLI" if is_connected else "BAĞLANTI YOK"
-    st.sidebar.markdown(f"""
-        <div style="position: fixed; bottom: 20px; left: 20px; padding: 10px; border-radius: 5px; 
-        background-color: {status_color}; color: white; font-size: 11px; font-weight: bold; z-index: 1000;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.3);">
-            ● API: {status_text}
-        </div>
-    """, unsafe_allow_html=True)
-
-# --- 7. ANA EKRAN ---
-st.markdown(f"<h3 style='text-align: center; color: #4A4A4A;'>{get_greeting()}</h3>", unsafe_allow_html=True)
+# --- 4. ANA EKRAN ---
 st.divider()
-
 c1, c2, c3 = st.columns(3)
 geod_try_val = st.session_state.geod_p * st.session_state.usd_t
 c1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
@@ -250,11 +222,17 @@ if st.session_state.last_results:
     for i, m_name in enumerate(df['Is_Ortagi'].unique()):
         m_data = df[df['Is_Ortagi'] == m_name]
         tel = m_data['Telefon'].iloc[0]
-        pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
-        msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
-        wp_url = f"https://wa.me/{tel}?text={urllib.parse.quote(msg_text)}"
         
         col_m, col_p, col_w = st.columns([3, 1, 1])
-        col_m.write(f"👤 **{m_name}** ({tel})")
-        col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"p_{i}")
-        col_w.markdown(f'<a href="{wp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 WP Gönder</button></a>', unsafe_allow_html=True)
+        col_m.write(f"👤 **{m_name}**")
+        
+        pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
+        col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
+        
+        # --- WHATSAPP BUTON KONTROLÜ ---
+        if tel and str(tel).strip() not in ["", "nan", "None", "90"]:
+            msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
+            wp_url = f"https://wa.me/{tel}?text={urllib.parse.quote(msg_text)}"
+            col_w.markdown(f'<a href="{wp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 WP Gönder</button></a>', unsafe_allow_html=True)
+        else:
+            col_w.markdown(f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>', unsafe_allow_html=True)
