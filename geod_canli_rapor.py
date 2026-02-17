@@ -3,7 +3,6 @@ import requests
 import time
 import binascii
 import pandas as pd
-import plotly.express as px
 from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -12,7 +11,7 @@ import warnings
 
 # --- GENEL AYARLAR ---
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
+st.set_page_config(page_title="MonsPro | Finansal Portal", layout="wide")
 
 # --- 1. DİNAMİK SELAMLAMA ---
 def get_greeting():
@@ -23,45 +22,21 @@ def get_greeting():
     else: greet = "Iyi Geceler"
     return f"✨ {greet}, MonsPro Team Hosgeldiniz."
 
-# --- 2. HAVA DURUMU ---
-def get_weather():
-    cities = {
-        "Istanbul": {"lat": 41.0082, "lon": 28.9784}, "Ankara": {"lat": 39.9334, "lon": 32.8597},
-        "Izmir": {"lat": 38.4192, "lon": 27.1287}, "Erzurum": {"lat": 39.9000, "lon": 41.2700},
-        "Antalya": {"lat": 36.8969, "lon": 30.7133}, "Sinop": {"lat": 42.0268, "lon": 35.1625},
-        "Gaziantep": {"lat": 37.0662, "lon": 37.3833}
-    }
-    weather_results = []
-    try:
-        for city, coords in cities.items():
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={coords['lat']}&longitude={coords['lon']}&current_weather=true&daily=precipitation_sum,windspeed_10m_max&timezone=auto"
-            res = requests.get(url, timeout=5).json()
-            curr = res['current_weather']
-            precip = res['daily']['precipitation_sum'][0]
-            wind = res['daily']['windspeed_10m_max'][0]
-            weather_results.append({"city": city, "temp": curr['temperature'], "precip": precip, "wind": wind, "risky": (precip > 10 or wind > 40)})
-        return weather_results
-    except: return []
-
-# --- 3. YARDIMCI FONKSİYONLAR ---
+# --- 2. YARDIMCI FONKSİYONLAR ---
 def temizle(text):
     if text is None: return ""
-    mapping = {
-        "ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U",
-        "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"
-    }
+    mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
     for key, val in mapping.items():
         text = str(text).replace(key, val)
     return text
 
 def get_live_prices():
     try:
-        res = requests.get("https://api.coingecko.com/api/v3/coins/geodnet/market_chart?vs_currency=usd&days=30", timeout=10).json()
-        df_p = pd.DataFrame(res['prices'], columns=['time', 'price'])
-        df_p['time'] = pd.to_datetime(df_p['time'], unit='ms')
-        geod_p, usd_t = df_p['price'].iloc[-1], requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
-        return geod_p, usd_t, df_p
-    except: return 0.1500, 33.00, pd.DataFrame()
+        geod_p = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=10).json()['geodnet']['usd']
+        usd_t = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
+        return geod_p, usd_t
+    except:
+        return 0.1500, 33.00
 
 def encrypt_param(data, key):
     k_fixed = str(key).rjust(16, '0')[:16].encode('utf-8')
@@ -75,11 +50,18 @@ def get_all_rewards(sn, start, end):
     while curr_start <= end:
         curr_end = min(curr_start + timedelta(days=29), end)
         ts = str(int(time.time() * 1000))
-        params = {"clientId": st.secrets["CLIENT_ID"], "timeStamp": encrypt_param(ts, st.secrets["TOKEN"]), "sn": encrypt_param(sn, st.secrets["TOKEN"]), "minTime": encrypt_param(curr_start.strftime('%Y-%m-%d'), st.secrets["TOKEN"]), "maxTime": encrypt_param(curr_end.strftime('%Y-%m-%d'), st.secrets["TOKEN"])}
+        params = {
+            "clientId": st.secrets["CLIENT_ID"], 
+            "timeStamp": encrypt_param(ts, st.secrets["TOKEN"]), 
+            "sn": encrypt_param(sn, st.secrets["TOKEN"]), 
+            "minTime": encrypt_param(curr_start.strftime('%Y-%m-%d'), st.secrets["TOKEN"]), 
+            "maxTime": encrypt_param(curr_end.strftime('%Y-%m-%d'), st.secrets["TOKEN"])
+        }
         try:
             r = requests.get("https://consoleresapi.geodnet.com/getRewardsTimeLine", params=params, verify=False, timeout=15)
             res = r.json()
-            if res.get('statusCode') == 200: all_data.extend(res.get('data', []))
+            if res.get('statusCode') == 200:
+                all_data.extend(res.get('data', []))
         except: pass
         curr_start = curr_end + timedelta(days=1)
     return all_data
@@ -88,53 +70,45 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", 'B', 14)
-    # TÜM METİNLER TEMİZLENEREK YAZILIYOR
     pdf.cell(190, 10, "MonsPro GEODNET HAKEDIS RAPORU", ln=True, align='C')
     pdf.set_font("helvetica", '', 10)
     pdf.ln(5)
     pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
-    pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
-    pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
-    pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | USD Kuru: {u_try:.2f} TL", ln=True)
+    pdf.cell(95, 8, f"Donem: {s_date}", ln=True, align='R')
+    pdf.cell(190, 8, f"Anlik GEOD: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
     
-    pdf.set_fill_color(200, 200, 200)
+    pdf.set_fill_color(240, 240, 240)
     pdf.set_font("helvetica", 'B', 8)
     pdf.cell(40, 10, "Miner No", 1, 0, 'C', True)
     pdf.cell(20, 10, "Pay (%)", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Kazanc (T)", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Fix (T)", 1, 0, 'C', True)
-    pdf.cell(30, 10, "Top. Token", 1, 0, 'C', True)
-    pdf.cell(50, 10, "Tutar (TL)", 1, 1, 'C', True)
+    pdf.cell(30, 10, "Top. Uretim(T)", 1, 0, 'C', True)
+    pdf.cell(30, 10, "Ortak Payi(T)", 1, 0, 'C', True)
+    pdf.cell(35, 10, "Hakedis (USDT)", 1, 0, 'C', True)
+    pdf.cell(35, 10, "Hakedis (TL)", 1, 1, 'C', True)
     
     pdf.set_font("helvetica", '', 8)
     for _, row in data_df.iterrows():
         pdf.cell(40, 10, str(row['SN']), 1)
         pdf.cell(20, 10, f"%{row['Pay_Orani']*100:.0f}", 1, 0, 'C')
-        pdf.cell(25, 10, f"{row['Pay_Token']:.2f}", 1, 0, 'C')
-        pdf.cell(25, 10, f"{row['Eklenen_Token_Fix']:.2f}", 1, 0, 'C')
-        pdf.cell(30, 10, f"{row['Odenecek_Toplam_Token']:.2f}", 1, 0, 'C')
-        pdf.cell(50, 10, f"{row['Toplam_TL']:.2f} TL", 1, 1, 'C')
+        pdf.cell(30, 10, f"{row['Toplam_Uretim']:.2f}", 1, 0, 'C')
+        pdf.cell(30, 10, f"{row['Ortak_Pay_Token']:.2f}", 1, 0, 'C')
+        pdf.cell(35, 10, f"${row['Hakedis_USDT']:.2f}", 1, 0, 'C')
+        pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, 'C')
     
     pdf.ln(5)
     pdf.set_font("helvetica", 'B', 11)
-    pdf.cell(190, 10, f"Genel Toplam: {data_df['Toplam_TL'].sum():.2f} TL", ln=True, align='R')
+    pdf.cell(190, 10, f"Toplam Odenecek: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align='R')
     return bytes(pdf.output())
 
-# --- 4. SESSION STATE & UI ---
+# --- 3. SESSION STATE ---
 if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
-if 'geod_p' not in st.session_state: st.session_state.geod_p, st.session_state.usd_t, st.session_state.price_df = get_live_prices()
+if 'geod_p' not in st.session_state:
+    st.session_state.geod_p, st.session_state.usd_t = get_live_prices()
 
+# --- 4. KARŞILAMA ---
 st.markdown(f"<h3 style='text-align: center; color: #4A4A4A;'>{get_greeting()}</h3>", unsafe_allow_html=True)
-
-weather_data = get_weather()
-if weather_data:
-    cols = st.columns(len(weather_data))
-    for i, data in enumerate(weather_data):
-        with cols[i]:
-            color = "#FF4B4B" if data['risky'] else "#28A745"
-            st.markdown(f'<div style="text-align: center; border-radius: 8px; padding: 4px; border: 1.5px solid {color}; background-color: rgba(0,0,0,0.05);"><b style="color: {color}; font-size: 0.85em;">{temizle(data["city"])}</b><br><span style="font-size: 1em; font-weight: bold;">{data["temp"]}°C</span><br>{"<span style=\'color: #FF4B4B; font-size: 0.6em; font-weight: bold;\'>⚠️ RISK</span>" if data["risky"] else "<span style=\'color: #28A745; font-size: 0.6em;\'>✅ UYGUN</span>"}</div>', unsafe_allow_html=True)
 
 # --- 5. SIDEBAR ---
 with st.sidebar:
@@ -149,7 +123,7 @@ with st.sidebar:
         else:
             m_manual = st.text_input("Is Ortagi Adi", "Ozel Sorgu")
             sn_manual = st.text_input("Miner Numarasi (SN)")
-            kp_manual = st.number_input("Kar Payi Orani (%)", min_value=1, max_value=100, value=25)
+            kp_manual = st.number_input("Ortak Kar Payi Orani (%)", min_value=1, max_value=100, value=25)
             
         start_date = st.date_input("Baslangic", datetime.now() - timedelta(days=31))
         end_date = st.date_input("Bitis", datetime.now())
@@ -169,7 +143,7 @@ with st.sidebar:
             
             if source_df is not None:
                 results = []
-                geod_tl = st.session_state.geod_p * st.session_state.usd_t
+                geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
                 p_bar = st.progress(0)
                 for index, row in source_df.iterrows():
                     m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
@@ -179,51 +153,59 @@ with st.sidebar:
                     raw_data = get_all_rewards(sn_no, start_date, end_date)
                     total_token = sum([pd.to_numeric(d['reward'], errors='coerce') or 0 for d in raw_data])
                     
-                    pay_token = total_token * kp_rate
-                    tl_val = pay_token * geod_tl
-                    fix_tl = max(0, 500 - tl_val)
-                    fix_token = fix_tl / geod_tl if geod_tl > 0 else 0
+                    ortak_pay_token = total_token * kp_rate
+                    hakedis_usdt = ortak_pay_token * st.session_state.geod_p
+                    hakedis_tl = ortak_pay_token * geod_tl_rate
                     
                     results.append({
-                        "Musteri": m_name, "SN": sn_no, "Toplam_Uretim": total_token,
-                        "Pay_Orani": kp_rate, "Pay_Token": pay_token, 
-                        "Eklenen_Token_Fix": fix_token, "Toplam_TL": tl_val + fix_tl,
-                        "Odenecek_Toplam_Token": pay_token + fix_token,
-                        "Bize_Net_Kalan_Token": total_token - (pay_token + fix_token)
+                        "Musteri": m_name, "SN": sn_no, "Pay_Orani": kp_rate,
+                        "Toplam_Uretim": total_token,
+                        "Ortak_Pay_Token": ortak_pay_token,
+                        "Hakedis_USDT": hakedis_usdt,
+                        "Hakedis_TL": hakedis_tl,
+                        "MonsPro_Net_Kalan_Token": total_token - ortak_pay_token
                     })
                     p_bar.progress((index + 1) / len(source_df))
                 
                 st.session_state.last_results = {"df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t}
                 if kayit_adi: st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
-# --- 6. DASHBOARD ---
+    else:
+        if st.session_state.arsiv:
+            selected_h = st.selectbox("Gecmis Kayitlar", list(st.session_state.arsiv.keys()))
+            if st.button("Goruntule", use_container_width=True): st.session_state.last_results = st.session_state.arsiv[selected_h]
+            if st.button("Sil", type="secondary", use_container_width=True): 
+                del st.session_state.arsiv[selected_h]
+                st.rerun()
+
+# --- 6. ANA EKRAN DASHBOARD ---
 st.divider()
 c1, c2, c3 = st.columns(3)
+geod_try_val = st.session_state.geod_p * st.session_state.usd_t
 c1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
-c2.metric("USD / TRY", f"{st.session_state.usd_t:.2f} ₺")
-c3.metric("GEOD / TRY", f"{(st.session_state.geod_p * st.session_state.usd_t):.2f} ₺")
-
-if not st.session_state.price_df.empty:
-    st.divider()
-    col_chart, col_info = st.columns([2, 1])
-    with col_chart:
-        fig = px.line(st.session_state.price_df, x='time', y='price', title="30 Gunluk GEOD Trendi")
-        fig.add_hline(y=0.12, line_dash="dash", line_color="red", annotation_text="Kritik Esik (0.12$)")
-        st.plotly_chart(fig, use_container_width=True)
-    with col_info:
-        st.subheader("🎯 Stratejik Analiz")
-        if st.session_state.geod_p >= 0.12: st.success("**GUVENLI BOLGE**")
-        else: st.error("**RISKLI BOLGE**")
+c2.metric("USD / TRY", f"{st.session_state.usd_t:.2f} TL")
+c3.metric("GEOD / TRY", f"{geod_try_val:.2f} TL")
 
 if st.session_state.last_results:
     st.divider()
-    df = st.session_state.last_results["df"]
-    st.dataframe(df, use_container_width=True)
+    res = st.session_state.last_results
+    df = res["df"]
+    
+    # Yönetim Özeti
+    sm1, sm2, sm3 = st.columns(3)
+    sm1.metric("Toplam Uretim (Token)", f"{df['Toplam_Uretim'].sum():.2f}")
+    sm2.metric("Ortaklara Odenen (Token)", f"{df['Ortak_Pay_Token'].sum():.2f}")
+    sm3.metric("MonsPro Kalan (Token)", f"{df['MonsPro_Net_Kalan_Token'].sum():.2f}")
+    
+    st.dataframe(df.style.format({
+        "Hakedis_USDT": "{:.2f} $", "Hakedis_TL": "{:.2f} TL", 
+        "Toplam_Uretim": "{:.2f}", "Ortak_Pay_Token": "{:.2f}", "MonsPro_Net_Kalan_Token": "{:.2f}"
+    }), use_container_width=True)
     
     st.subheader("📥 Raporlar")
     for i, m_name in enumerate(df['Musteri'].unique()):
         m_data = df[df['Musteri'] == m_name]
-        pdf_bytes = create_pdf(m_name, m_data, st.session_state.last_results["kur_geod"], st.session_state.last_results["kur_usd"], st.session_state.last_results["donem"])
+        pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
         col_m, col_b = st.columns([4, 1])
         col_m.write(f"📄 {m_name}")
-        col_b.download_button("Indir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"dl_{i}")
+        col_b.download_button("PDF Indir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
