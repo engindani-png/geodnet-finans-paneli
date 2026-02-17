@@ -4,6 +4,7 @@ import time
 import binascii
 import pandas as pd
 import urllib.parse
+import re
 from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -15,6 +16,19 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
 # --- 1. FONKSİYONLAR ---
+def tel_no_temizle(tel):
+    """Numaradaki tüm rakam dışı karakterleri temizler ve formatı düzeltir."""
+    if tel is None: return None
+    # Sadece rakamları tut
+    temiz_tel = re.sub(r'\D', '', str(tel))
+    # Eğer numara 0 ile başlıyorsa (0532...) 0'ı kaldır ve 90 ekle
+    if temiz_tel.startswith('0'):
+        temiz_tel = '90' + temiz_tel[1:]
+    # Eğer numara doğrudan 5 ile başlıyorsa (532...) 90 ekle
+    elif temiz_tel.startswith('5') and len(temiz_tel) == 10:
+        temiz_tel = '90' + temiz_tel
+    return temiz_tel
+
 def temizle(text):
     if text is None: return ""
     mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
@@ -25,9 +39,7 @@ def temizle(text):
 def get_live_prices():
     try:
         res = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=5).json()
-        geod_p = res['geodnet']['usd']
-        usd_t = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
-        return geod_p, usd_t
+        return res['geodnet']['usd'], requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
     except:
         return 0.1500, 33.00
 
@@ -60,8 +72,7 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.set_font("helvetica", '', 10)
     pdf.ln(5)
     pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
-    pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
-    pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
+    pdf.cell(95, 8, f"Donem: {s_date}", ln=True, align='R')
     pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
     pdf.set_fill_color(240, 240, 240)
@@ -112,8 +123,7 @@ if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
 if 'geod_p' not in st.session_state:
     g_val, u_val = get_live_prices()
-    st.session_state.geod_p = g_val
-    st.session_state.usd_t = u_val
+    st.session_state.geod_p, st.session_state.usd_t = g_val, u_val
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
@@ -130,8 +140,7 @@ with st.sidebar:
         input_type = st.radio("Yöntem", ["Excel Yükle", "Manuel SN"])
         
         today = datetime.now()
-        first_day_of_month = today.replace(day=1)
-        start_date = st.date_input("Başlangıç Tarihi", value=first_day_of_month)
+        start_date = st.date_input("Başlangıç Tarihi", value=today.replace(day=1))
         end_date = st.date_input("Bitiş Tarihi", value=today)
         
         if input_type == "Excel Yükle":
@@ -140,7 +149,7 @@ with st.sidebar:
             m_manual = st.text_input("Is Ortagi Adi", "Ozel Sorgu")
             sn_manual = st.text_input("Miner Numarasi (SN)")
             kp_manual = st.number_input("Kar Payi Orani (%)", min_value=1, max_value=100, value=25)
-            tel_manual = st.text_input("Telefon (905...)", "")
+            tel_manual = st.text_input("Telefon", "")
             
         kayit_adi = st.text_input("Arsiv Ismi", value=today.strftime("%d.%m.%Y %H:%M"))
         
@@ -150,14 +159,17 @@ with st.sidebar:
                 df_raw = pd.read_excel(uploaded_file)
                 source_df = pd.DataFrame({'Musteri': df_raw['İş Ortağı'], 'SN': df_raw['Miner Numarası'], 'Kar_Payi': df_raw['Kar Payı'], 'Telefon': df_raw.get('Telefon', None)})
             elif input_type == "Manuel SN" and sn_manual:
-                source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100, 'Telefon': tel_manual if tel_manual else None}])
+                source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100, 'Telefon': tel_manual}])
             
             if source_df is not None:
                 results = []
                 geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
                 p_bar = st.progress(0)
                 for index, row in source_df.iterrows():
-                    m_name, sn_no, tel = str(row['Musteri']).strip(), str(row['SN']).strip(), row['Telefon']
+                    m_name, sn_no, tel_raw = str(row['Musteri']).strip(), str(row['SN']).strip(), row['Telefon']
+                    # NUMARA TEMİZLEME BURADA YAPILIYOR
+                    tel = tel_no_temizle(tel_raw)
+                    
                     kp_raw = float(row['Kar_Payi'])
                     kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
                     raw_data = get_all_rewards(sn_no, start_date, end_date)
@@ -244,12 +256,11 @@ if st.session_state.last_results:
         col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
         
         if tel and tel not in ["", "nan", "None", "90"]:
-            # MASAÜSTÜ WHATSAPP UYGULAMASINI TETİKLEYEN PROTOKOL
             msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
             encoded_msg = urllib.parse.quote(msg_text)
-            # 'whatsapp://' masaüstü uygulamasını açmaya çalışır
+            # UYGULAMA PROTOKOLÜ
             wp_app_url = f"whatsapp://send?phone={tel}&text={encoded_msg}"
             
             col_w.markdown(f'<a href="{wp_app_url}"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 Uygulama Aç</button></a>', unsafe_allow_html=True)
         else:
-            col_w.markdown(f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>', unsafe_allow_html=True)
+            col_w.markdown(f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Numara Hatalı</button>', unsafe_allow_html=True)
