@@ -4,7 +4,6 @@ import time
 import binascii
 import pandas as pd
 import urllib.parse
-import re
 from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -16,19 +15,6 @@ warnings.filterwarnings('ignore')
 st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
 # --- 1. FONKSİYONLAR ---
-def tel_no_temizle(tel):
-    """Numaradaki tüm rakam dışı karakterleri temizler ve formatı düzeltir."""
-    if tel is None: return None
-    # Sadece rakamları tut
-    temiz_tel = re.sub(r'\D', '', str(tel))
-    # Eğer numara 0 ile başlıyorsa (0532...) 0'ı kaldır ve 90 ekle
-    if temiz_tel.startswith('0'):
-        temiz_tel = '90' + temiz_tel[1:]
-    # Eğer numara doğrudan 5 ile başlıyorsa (532...) 90 ekle
-    elif temiz_tel.startswith('5') and len(temiz_tel) == 10:
-        temiz_tel = '90' + temiz_tel
-    return temiz_tel
-
 def temizle(text):
     if text is None: return ""
     mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
@@ -39,7 +25,9 @@ def temizle(text):
 def get_live_prices():
     try:
         res = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=5).json()
-        return res['geodnet']['usd'], requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
+        geod_p = res['geodnet']['usd']
+        usd_t = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
+        return geod_p, usd_t
     except:
         return 0.1500, 33.00
 
@@ -72,7 +60,8 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.set_font("helvetica", '', 10)
     pdf.ln(5)
     pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
-    pdf.cell(95, 8, f"Donem: {s_date}", ln=True, align='R')
+    pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
+    pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
     pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
     pdf.set_fill_color(240, 240, 240)
@@ -123,7 +112,8 @@ if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
 if 'geod_p' not in st.session_state:
     g_val, u_val = get_live_prices()
-    st.session_state.geod_p, st.session_state.usd_t = g_val, u_val
+    st.session_state.geod_p = g_val
+    st.session_state.usd_t = u_val
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
@@ -156,8 +146,14 @@ with st.sidebar:
         if st.button("HESAPLA", type="primary", use_container_width=True):
             source_df = None
             if input_type == "Excel Yükle" and uploaded_file:
-                df_raw = pd.read_excel(uploaded_file)
-                source_df = pd.DataFrame({'Musteri': df_raw['İş Ortağı'], 'SN': df_raw['Miner Numarası'], 'Kar_Payi': df_raw['Kar Payı'], 'Telefon': df_raw.get('Telefon', None)})
+                # ÖNEMLİ: Excel okurken numarayı string (metin) olarak zorla
+                df_raw = pd.read_excel(uploaded_file, dtype={'Telefon': str, 'Miner Numarası': str})
+                source_df = pd.DataFrame({
+                    'Musteri': df_raw['İş Ortağı'], 
+                    'SN': df_raw['Miner Numarası'], 
+                    'Kar_Payi': df_raw['Kar Payı'], 
+                    'Telefon': df_raw.get('Telefon', None)
+                })
             elif input_type == "Manuel SN" and sn_manual:
                 source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100, 'Telefon': tel_manual}])
             
@@ -166,9 +162,12 @@ with st.sidebar:
                 geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
                 p_bar = st.progress(0)
                 for index, row in source_df.iterrows():
-                    m_name, sn_no, tel_raw = str(row['Musteri']).strip(), str(row['SN']).strip(), row['Telefon']
-                    # NUMARA TEMİZLEME BURADA YAPILIYOR
-                    tel = tel_no_temizle(tel_raw)
+                    m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
+                    
+                    # EN SAĞLAM NUMARA ALMA YÖNTEMİ
+                    tel = str(row['Telefon']).replace('.0', '').strip() if row['Telefon'] is not None else ""
+                    if tel.startswith('5'): tel = '90' + tel
+                    elif tel.startswith('0'): tel = '9' + tel # 0532 -> 90532
                     
                     kp_raw = float(row['Kar_Payi'])
                     kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
@@ -247,7 +246,7 @@ if st.session_state.last_results:
     st.subheader("📲 Rapor Gönderim ve İndirme")
     for i, m_name in enumerate(df['Is_Ortagi'].unique()):
         m_data = df[df['Is_Ortagi'] == m_name]
-        tel = str(m_data['Telefon'].iloc[0]).strip()
+        tel = str(m_data['Telefon'].iloc[0])
         
         col_m, col_p, col_w = st.columns([3, 1, 1])
         col_m.write(f"👤 **{m_name}**")
@@ -255,12 +254,12 @@ if st.session_state.last_results:
         pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
         col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
         
-        if tel and tel not in ["", "nan", "None", "90"]:
+        if tel and tel not in ["nan", "None", "", "90"]:
             msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
             encoded_msg = urllib.parse.quote(msg_text)
-            # UYGULAMA PROTOKOLÜ
-            wp_app_url = f"whatsapp://send?phone={tel}&text={encoded_msg}"
+            # Hem web hem uygulama uyumlu wa.me formatı
+            wp_url = f"https://wa.me/{tel}?text={encoded_msg}"
             
-            col_w.markdown(f'<a href="{wp_app_url}"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 Uygulama Aç</button></a>', unsafe_allow_html=True)
+            col_w.markdown(f'<a href="{wp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 WP Gönder</button></a>', unsafe_allow_html=True)
         else:
-            col_w.markdown(f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Numara Hatalı</button>', unsafe_allow_html=True)
+            col_w.markdown(f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>', unsafe_allow_html=True)
