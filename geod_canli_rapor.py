@@ -25,21 +25,23 @@ def get_greeting():
 # --- 2. YARDIMCI FONKSİYONLAR ---
 def temizle(text):
     if text is None: return ""
-    mapping = {
-        "ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", 
-        "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"
-    }
+    mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
     for key, val in mapping.items():
         text = str(text).replace(key, val)
     return text
 
 def get_live_prices():
+    status = False
     try:
-        geod_p = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=10).json()['geodnet']['usd']
+        # GEODNET Price from CoinGecko
+        res = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=5).json()
+        geod_p = res['geodnet']['usd']
+        # USD to TRY from ExchangeRate-API
         usd_t = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
-        return geod_p, usd_t
+        status = True
+        return geod_p, usd_t, status
     except:
-        return 0.1500, 33.00
+        return 0.1500, 33.00, False
 
 def encrypt_param(data, key):
     k_fixed = str(key).rjust(16, '0')[:16].encode('utf-8')
@@ -72,9 +74,8 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
     pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
     pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
-    pdf.cell(190, 8, f"Anlik GEOD: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
+    pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
-    
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("helvetica", 'B', 7)
     pdf.cell(30, 10, "Miner No", 1, 0, 'C', True)
@@ -84,18 +85,15 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(25, 10, "Eklenen", 1, 0, 'C', True)
     pdf.cell(30, 10, "Top.GEOD", 1, 0, 'C', True)
     pdf.cell(35, 10, "Tutar(TL)", 1, 1, 'C', True)
-    
     pdf.set_font("helvetica", '', 7)
     for _, row in data_df.iterrows():
         pdf.cell(30, 10, str(row['SN']), 1)
         pdf.cell(20, 10, f"{row['Toplam_GEOD_Kazanc']:.2f}", 1)
-        # DURUM ETİKETİNİ TEMİZLEYEREK YAZDIRIYORUZ (HATA ÇÖZÜMÜ)
         pdf.cell(25, 10, temizle(row['Durum_Etiket']), 1, 0, 'C')
         pdf.cell(25, 10, f"{row['Hakedis_Baz']:.2f}", 1)
         pdf.cell(25, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
         pdf.cell(30, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
         pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, 'C')
-    
     pdf.ln(5)
     pdf.set_font("helvetica", 'B', 10)
     pdf.cell(190, 10, f"Genel Toplam: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align='R')
@@ -104,15 +102,27 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
 # --- 3. SESSION STATE ---
 if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
-if 'geod_p' not in st.session_state: st.session_state.geod_p, st.session_state.usd_t = get_live_prices()
 
-# --- 4. KARŞILAMA ---
-st.markdown(f"<h3 style='text-align: center; color: #4A4A4A;'>{get_greeting()}</h3>", unsafe_allow_html=True)
+# --- 4. DATA FETCH & API STATUS ---
+geod_live, usd_live, api_status = get_live_prices()
+if 'geod_p' not in st.session_state or api_status:
+    st.session_state.geod_p = geod_live
+    st.session_state.usd_t = usd_live
 
 # --- 5. SIDEBAR ---
 with st.sidebar:
     st.markdown("<h1 style='color: #FF4B4B;'>🛰️ MonsPro</h1>", unsafe_allow_html=True)
     menu = st.radio("Menü Seçimi", ["📊 Yeni Sorgu", "📚 Arşiv"])
+    st.divider()
+    
+    # Fiyat Modu: Otomatik / Manuel
+    price_mode = st.toggle("Manuel Fiyat Girişi", value=False)
+    if price_mode:
+        st.session_state.geod_p = st.number_input("GEOD Fiyat ($)", value=st.session_state.geod_p, format="%.4f")
+        st.caption("Şu an Manuel Fiyat kullanılıyor.")
+    else:
+        st.caption("Veri Kaynağı: **CoinGecko**")
+    
     st.divider()
     
     if menu == "📊 Yeni Sorgu":
@@ -176,8 +186,19 @@ with st.sidebar:
                 st.session_state.last_results = {"df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t, "target": target_tl}
                 if kayit_adi: st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
+    # API Durum Göstergesi (Sol Alt)
+    status_color = "#28A745" if api_status else "#FF4B4B"
+    status_text = "API Bağlı" if api_status else "API Hatası"
+    st.sidebar.markdown(f"""
+        <div style="position: fixed; bottom: 20px; left: 20px; padding: 10px; border-radius: 5px; background-color: {status_color}; color: white; font-size: 12px; font-weight: bold; z-index: 1000;">
+            ● {status_text}
+        </div>
+    """, unsafe_allow_html=True)
+
 # --- 6. ANA EKRAN ---
+st.markdown(f"<h3 style='text-align: center; color: #4A4A4A;'>{get_greeting()}</h3>", unsafe_allow_html=True)
 st.divider()
+
 c1, c2, c3 = st.columns(3)
 geod_try_val = st.session_state.geod_p * st.session_state.usd_t
 c1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
