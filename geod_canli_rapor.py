@@ -3,6 +3,7 @@ import requests
 import time
 import binascii
 import pandas as pd
+import urllib.parse
 from datetime import datetime, timedelta
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -11,9 +12,9 @@ import warnings
 
 # --- GENEL AYARLAR ---
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="MonsPro | Finansal Portal", layout="wide")
+st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
-# --- 1. SELAMLAMA ---
+# --- 1. FONKSİYONLAR ---
 def get_greeting():
     hour = datetime.now().hour
     if 5 <= hour < 12: greet = "Gunaydin"
@@ -22,7 +23,6 @@ def get_greeting():
     else: greet = "Iyi Geceler"
     return f"✨ {greet}, MonsPro Team Hosgeldiniz."
 
-# --- 2. YARDIMCI FONKSİYONLAR ---
 def temizle(text):
     if text is None: return ""
     mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
@@ -33,10 +33,8 @@ def temizle(text):
 def get_live_prices():
     status = False
     try:
-        # GEODNET Price from CoinGecko
         res = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd", timeout=5).json()
         geod_p = res['geodnet']['usd']
-        # USD to TRY from ExchangeRate-API
         usd_t = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()['rates']['TRY']
         status = True
         return geod_p, usd_t, status
@@ -72,8 +70,7 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.set_font("helvetica", '', 10)
     pdf.ln(5)
     pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
-    pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align='R')
-    pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
+    pdf.cell(95, 8, f"Donem: {s_date}", ln=True, align='R')
     pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
     pdf.set_fill_color(240, 240, 240)
@@ -81,8 +78,8 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(30, 10, "Miner No", 1, 0, 'C', True)
     pdf.cell(20, 10, "Kazanc", 1, 0, 'C', True)
     pdf.cell(25, 10, "Durum", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Hakedis", 1, 0, 'C', True)
-    pdf.cell(25, 10, "Eklenen", 1, 0, 'C', True)
+    pdf.cell(25, 10, "Hak(T)", 1, 0, 'C', True)
+    pdf.cell(25, 10, "Destek(T)", 1, 0, 'C', True)
     pdf.cell(30, 10, "Top.GEOD", 1, 0, 'C', True)
     pdf.cell(35, 10, "Tutar(TL)", 1, 1, 'C', True)
     pdf.set_font("helvetica", '', 7)
@@ -99,31 +96,45 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(190, 10, f"Genel Toplam: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align='R')
     return bytes(pdf.output())
 
-# --- 3. SESSION STATE ---
+def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
+    msg = f"*📄 MonsPro GEODNET Hakedis Raporu*\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"*👤 Is Ortagi:* {temizle(m_name)}\n"
+    msg += f"*📅 Donem:* {donem}\n"
+    msg += f"*💰 Anlik Kur:* 1 GEOD = ${kur_geod:.4f} ({kur_geod * kur_usd:.2f} TL)\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
+    for _, row in m_data.iterrows():
+        simge = "✅" if row['Durum_Etiket'] == "TAM KAZANC" else "🎁" if row['Durum_Etiket'] == "DESTEKLENDI" else "⚠️"
+        msg += f"{simge} *Miner:* {row['SN']}\n"
+        msg += f"   └ Kazanc: {row['Toplam_GEOD_Kazanc']:.2f} GEOD\n"
+        if row['EKLENEN_GEOD'] > 0:
+            msg += f"   └ Destek: +{row['EKLENEN_GEOD']:.2f} GEOD\n"
+        msg += f"   └ *Hakedis:* {row['Hakedis_TL']:.2f} TL\n\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"*💳 TOPLAM ODEME: {m_data['Hakedis_TL'].sum():.2f} TL*\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"ℹ️ _Detayli PDF raporunuz ekte sunulmustur._\n"
+    msg += f"🚀 *MonsPro Team*"
+    return msg
+
+# --- 2. SESSION STATE ---
 if 'arsiv' not in st.session_state: st.session_state.arsiv = {}
 if 'last_results' not in st.session_state: st.session_state.last_results = None
 
-# --- 4. DATA FETCH & API STATUS ---
 geod_live, usd_live, api_status = get_live_prices()
-if 'geod_p' not in st.session_state or api_status:
+if 'geod_p' not in st.session_state:
     st.session_state.geod_p = geod_live
     st.session_state.usd_t = usd_live
 
-# --- 5. SIDEBAR ---
+# --- 3. SIDEBAR ---
 with st.sidebar:
     st.markdown("<h1 style='color: #FF4B4B;'>🛰️ MonsPro</h1>", unsafe_allow_html=True)
     menu = st.radio("Menü Seçimi", ["📊 Yeni Sorgu", "📚 Arşiv"])
     st.divider()
     
-    # Fiyat Modu: Otomatik / Manuel
     price_mode = st.toggle("Manuel Fiyat Girişi", value=False)
     if price_mode:
         st.session_state.geod_p = st.number_input("GEOD Fiyat ($)", value=st.session_state.geod_p, format="%.4f")
-        st.caption("Şu an Manuel Fiyat kullanılıyor.")
-    else:
-        st.caption("Veri Kaynağı: **CoinGecko**")
-    
-    st.divider()
     
     if menu == "📊 Yeni Sorgu":
         target_tl = st.number_input("Tamamlanacak TL Tutarı", min_value=0, value=500, step=50)
@@ -134,6 +145,7 @@ with st.sidebar:
             m_manual = st.text_input("Is Ortagi Adi", "Ozel Sorgu")
             sn_manual = st.text_input("Miner Numarasi (SN)")
             kp_manual = st.number_input("Kar Payi Orani (%)", min_value=1, max_value=100, value=25)
+            tel_manual = st.text_input("Telefon (905...)", "90")
             
         start_date = st.date_input("Baslangic", datetime.now() - timedelta(days=31))
         end_date = st.date_input("Bitis", datetime.now())
@@ -143,16 +155,19 @@ with st.sidebar:
             source_df = None
             if input_type == "Excel Yükle" and uploaded_file:
                 df_raw = pd.read_excel(uploaded_file)
-                source_df = pd.DataFrame({'Musteri': df_raw['İş Ortağı'], 'SN': df_raw['Miner Numarası'], 'Kar_Payi': df_raw['Kar Payı']})
+                source_df = pd.DataFrame({
+                    'Musteri': df_raw['İş Ortağı'], 'SN': df_raw['Miner Numarası'], 
+                    'Kar_Payi': df_raw['Kar Payı'], 'Telefon': df_raw.get('Telefon', '90')
+                })
             elif input_type == "Manuel SN" and sn_manual:
-                source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100}])
+                source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100, 'Telefon': tel_manual}])
             
             if source_df is not None:
                 results = []
                 geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
                 p_bar = st.progress(0)
                 for index, row in source_df.iterrows():
-                    m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
+                    m_name, sn_no, tel = str(row['Musteri']).strip(), str(row['SN']).strip(), str(row['Telefon']).strip()
                     kp_raw = float(row['Kar_Payi'])
                     kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
                     raw_data = get_all_rewards(sn_no, start_date, end_date)
@@ -176,7 +191,7 @@ with st.sidebar:
                             durum_etiket = "TAM KAZANC"
 
                     results.append({
-                        "Is_Ortagi": m_name, "SN": sn_no, "Toplam_GEOD_Kazanc": total_token,
+                        "Is_Ortagi": m_name, "SN": sn_no, "Telefon": tel, "Toplam_GEOD_Kazanc": total_token,
                         "Hakedis_Baz": mevcut_pay_token, "EKLENEN_GEOD": eklenen_geod,
                         "GEOD_HAKEDIS": geod_hakedis, "Hakedis_TL": geod_hakedis * geod_tl_rate,
                         "MONSPRO_KAZANC": total_token - geod_hakedis, "Durum_Etiket": durum_etiket
@@ -186,16 +201,10 @@ with st.sidebar:
                 st.session_state.last_results = {"df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t, "target": target_tl}
                 if kayit_adi: st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
-    # API Durum Göstergesi (Sol Alt)
     status_color = "#28A745" if api_status else "#FF4B4B"
-    status_text = "API Bağlı" if api_status else "API Hatası"
-    st.sidebar.markdown(f"""
-        <div style="position: fixed; bottom: 20px; left: 20px; padding: 10px; border-radius: 5px; background-color: {status_color}; color: white; font-size: 12px; font-weight: bold; z-index: 1000;">
-            ● {status_text}
-        </div>
-    """, unsafe_allow_html=True)
+    st.sidebar.markdown(f'<div style="position: fixed; bottom: 20px; left: 20px; padding: 10px; border-radius: 5px; background-color: {status_color}; color: white; font-size: 12px; font-weight: bold; z-index: 1000;">● API Bagli</div>', unsafe_allow_html=True)
 
-# --- 6. ANA EKRAN ---
+# --- 4. ANA EKRAN ---
 st.markdown(f"<h3 style='text-align: center; color: #4A4A4A;'>{get_greeting()}</h3>", unsafe_allow_html=True)
 st.divider()
 
@@ -210,7 +219,7 @@ if st.session_state.last_results:
     res = st.session_state.last_results
     df = res["df"]
     
-    st.header(f"📋 Hakediş Detayları (Hedef: {res['target']} TL)")
+    st.header(f"📋 Hakedis Detaylari (Hedef: {res['target']} TL)")
     
     def style_rows(row):
         if row.Toplam_GEOD_Kazanc < 180:
@@ -223,10 +232,16 @@ if st.session_state.last_results:
         "GEOD_HAKEDIS": "{:.2f}", "MONSPRO_KAZANC": "{:.2f}"
     }), use_container_width=True)
     
-    st.subheader("📥 Raporlar")
+    st.subheader("📲 Rapor Gonderim ve Indirme")
     for i, m_name in enumerate(df['Is_Ortagi'].unique()):
         m_data = df[df['Is_Ortagi'] == m_name]
+        tel = m_data['Telefon'].iloc[0]
+        
         pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
-        col_m, col_b = st.columns([4, 1])
-        col_m.write(f"📄 {m_name}")
-        col_b.download_button("PDF Indir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
+        msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
+        wp_url = f"https://wa.me/{tel}?text={urllib.parse.quote(msg_text)}"
+        
+        col_m, col_p, col_w = st.columns([3, 1, 1])
+        col_m.write(f"👤 **{m_name}** ({tel})")
+        col_p.download_button("📂 PDF Indir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"p_{i}")
+        col_w.markdown(f'<a href="{wp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">💬 WP Gonder</button></a>', unsafe_allow_html=True)
