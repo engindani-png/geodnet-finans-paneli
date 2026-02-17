@@ -17,17 +17,17 @@ st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 # --- 1. DİNAMİK SELAMLAMA ---
 def get_greeting():
     hour = datetime.now().hour
-    if 5 <= hour < 12: greet = "Günaydın"
-    elif 12 <= hour < 18: greet = "Tünaydın"
-    elif 18 <= hour < 22: greet = "İyi Akşamlar"
-    else: greet = "İyi Geceler"
-    return f"✨ {greet}, MonsPro Team Hoşgeldiniz."
+    if 5 <= hour < 12: greet = "Gunaydin"
+    elif 12 <= hour < 18: greet = "Tunaydin"
+    elif 18 <= hour < 22: greet = "Iyi Aksamlar"
+    else: greet = "Iyi Geceler"
+    return f"✨ {greet}, MonsPro Team Hosgeldiniz."
 
 # --- 2. HAVA DURUMU ---
 def get_weather():
     cities = {
-        "İstanbul": {"lat": 41.0082, "lon": 28.9784}, "Ankara": {"lat": 39.9334, "lon": 32.8597},
-        "İzmir": {"lat": 38.4192, "lon": 27.1287}, "Erzurum": {"lat": 39.9000, "lon": 41.2700},
+        "Istanbul": {"lat": 41.0082, "lon": 28.9784}, "Ankara": {"lat": 39.9334, "lon": 32.8597},
+        "Izmir": {"lat": 38.4192, "lon": 27.1287}, "Erzurum": {"lat": 39.9000, "lon": 41.2700},
         "Antalya": {"lat": 36.8969, "lon": 30.7133}, "Sinop": {"lat": 42.0268, "lon": 35.1625},
         "Gaziantep": {"lat": 37.0662, "lon": 37.3833}
     }
@@ -45,8 +45,13 @@ def get_weather():
 
 # --- 3. YARDIMCI FONKSİYONLAR ---
 def temizle(text):
-    mapping = {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
-    for key, val in mapping.items(): text = str(text).replace(key, val)
+    if text is None: return ""
+    mapping = {
+        "ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U",
+        "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"
+    }
+    for key, val in mapping.items():
+        text = str(text).replace(key, val)
     return text
 
 def get_live_prices():
@@ -83,6 +88,7 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("helvetica", 'B', 14)
+    # TÜM METİNLER TEMİZLENEREK YAZILIYOR
     pdf.cell(190, 10, "MonsPro GEODNET HAKEDIS RAPORU", ln=True, align='C')
     pdf.set_font("helvetica", '', 10)
     pdf.ln(5)
@@ -91,6 +97,7 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
     pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | USD Kuru: {u_try:.2f} TL", ln=True)
     pdf.ln(5)
+    
     pdf.set_fill_color(200, 200, 200)
     pdf.set_font("helvetica", 'B', 8)
     pdf.cell(40, 10, "Miner No", 1, 0, 'C', True)
@@ -99,6 +106,7 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
     pdf.cell(25, 10, "Fix (T)", 1, 0, 'C', True)
     pdf.cell(30, 10, "Top. Token", 1, 0, 'C', True)
     pdf.cell(50, 10, "Tutar (TL)", 1, 1, 'C', True)
+    
     pdf.set_font("helvetica", '', 8)
     for _, row in data_df.iterrows():
         pdf.cell(40, 10, str(row['SN']), 1)
@@ -107,6 +115,7 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date):
         pdf.cell(25, 10, f"{row['Eklenen_Token_Fix']:.2f}", 1, 0, 'C')
         pdf.cell(30, 10, f"{row['Odenecek_Toplam_Token']:.2f}", 1, 0, 'C')
         pdf.cell(50, 10, f"{row['Toplam_TL']:.2f} TL", 1, 1, 'C')
+    
     pdf.ln(5)
     pdf.set_font("helvetica", 'B', 11)
     pdf.cell(190, 10, f"Genel Toplam: {data_df['Toplam_TL'].sum():.2f} TL", ln=True, align='R')
@@ -119,14 +128,13 @@ if 'geod_p' not in st.session_state: st.session_state.geod_p, st.session_state.u
 
 st.markdown(f"<h3 style='text-align: center; color: #4A4A4A;'>{get_greeting()}</h3>", unsafe_allow_html=True)
 
-# Weather Bar
 weather_data = get_weather()
 if weather_data:
     cols = st.columns(len(weather_data))
     for i, data in enumerate(weather_data):
         with cols[i]:
             color = "#FF4B4B" if data['risky'] else "#28A745"
-            st.markdown(f'<div style="text-align: center; border-radius: 8px; padding: 4px; border: 1.5px solid {color}; background-color: rgba(0,0,0,0.05);"><b style="color: {color}; font-size: 0.85em;">{data["city"]}</b><br><span style="font-size: 1em; font-weight: bold;">{data["temp"]}°C</span><br>{"<span style=\'color: #FF4B4B; font-size: 0.6em; font-weight: bold;\'>⚠️ RISK</span>" if data["risky"] else "<span style=\'color: #28A745; font-size: 0.6em;\'>✅ UYGUN</span>"}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="text-align: center; border-radius: 8px; padding: 4px; border: 1.5px solid {color}; background-color: rgba(0,0,0,0.05);"><b style="color: {color}; font-size: 0.85em;">{temizle(data["city"])}</b><br><span style="font-size: 1em; font-weight: bold;">{data["temp"]}°C</span><br>{"<span style=\'color: #FF4B4B; font-size: 0.6em; font-weight: bold;\'>⚠️ RISK</span>" if data["risky"] else "<span style=\'color: #28A745; font-size: 0.6em;\'>✅ UYGUN</span>"}</div>', unsafe_allow_html=True)
 
 # --- 5. SIDEBAR ---
 with st.sidebar:
@@ -137,26 +145,24 @@ with st.sidebar:
     if menu == "📊 Yeni Sorgu":
         input_type = st.radio("Yöntem", ["Excel Yükle", "Manuel SN"])
         if input_type == "Excel Yükle":
-            uploaded_file = st.file_uploader("Excel Seç (İş Ortağı, İl, Konum, Miner Numarası, Kar Payı)", type=['xlsx'])
+            uploaded_file = st.file_uploader("Excel Yukle", type=['xlsx'])
         else:
-            m_manual = st.text_input("İş Ortağı Adı", "Özel Sorgu")
-            sn_manual = st.text_input("Miner Numarası (SN)")
-            kp_manual = st.number_input("Kar Payı Oranı (%)", min_value=1, max_value=100, value=25)
+            m_manual = st.text_input("Is Ortagi Adi", "Ozel Sorgu")
+            sn_manual = st.text_input("Miner Numarasi (SN)")
+            kp_manual = st.number_input("Kar Payi Orani (%)", min_value=1, max_value=100, value=25)
             
-        start_date = st.date_input("Başlangıç", datetime.now() - timedelta(days=31))
-        end_date = st.date_input("Bitiş", datetime.now())
-        kayit_adi = st.text_input("Arşiv İsmi", value=datetime.now().strftime("%d.%m.%Y %H:%M"))
+        start_date = st.date_input("Baslangic", datetime.now() - timedelta(days=31))
+        end_date = st.date_input("Bitis", datetime.now())
+        kayit_adi = st.text_input("Arsiv Ismi", value=datetime.now().strftime("%d.%m.%Y %H:%M"))
         
         if st.button("HESAPLA", type="primary", use_container_width=True):
             source_df = None
             if input_type == "Excel Yükle" and uploaded_file:
                 df_raw = pd.read_excel(uploaded_file)
-                # Yeni sütun yapısına göre eşleştirme
                 source_df = pd.DataFrame({
                     'Musteri': df_raw['İş Ortağı'],
                     'SN': df_raw['Miner Numarası'],
-                    'İl': df_raw['İl'],
-                    'Kar_Payi': df_raw['Kar Payı'] # Örn: 0.25 veya 25
+                    'Kar_Payi': df_raw['Kar Payı']
                 })
             elif input_type == "Manuel SN" and sn_manual:
                 source_df = pd.DataFrame([{'Musteri': m_manual, 'SN': sn_manual, 'Kar_Payi': kp_manual/100}])
@@ -167,7 +173,6 @@ with st.sidebar:
                 p_bar = st.progress(0)
                 for index, row in source_df.iterrows():
                     m_name, sn_no = str(row['Musteri']).strip(), str(row['SN']).strip()
-                    # Kar payı verisini normalize et (25 gelirse 0.25 yap)
                     kp_raw = float(row['Kar_Payi'])
                     kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
                     
@@ -191,14 +196,6 @@ with st.sidebar:
                 st.session_state.last_results = {"df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t}
                 if kayit_adi: st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
-    else: # Arşiv
-        if st.session_state.arsiv:
-            selected_h = st.selectbox("Geçmiş Kayıtlar", list(st.session_state.arsiv.keys()))
-            if st.button("Görüntüle", use_container_width=True): st.session_state.last_results = st.session_state.arsiv[selected_h]
-            if st.button("Sil", type="secondary", use_container_width=True): 
-                del st.session_state.arsiv[selected_h]
-                st.rerun()
-
 # --- 6. DASHBOARD ---
 st.divider()
 c1, c2, c3 = st.columns(3)
@@ -210,29 +207,23 @@ if not st.session_state.price_df.empty:
     st.divider()
     col_chart, col_info = st.columns([2, 1])
     with col_chart:
-        fig = px.line(st.session_state.price_df, x='time', y='price', title="30 Günlük GEOD Trendi")
-        fig.add_hline(y=0.12, line_dash="dash", line_color="red", annotation_text="Kritik Eşik (0.12$)")
+        fig = px.line(st.session_state.price_df, x='time', y='price', title="30 Gunluk GEOD Trendi")
+        fig.add_hline(y=0.12, line_dash="dash", line_color="red", annotation_text="Kritik Esik (0.12$)")
         st.plotly_chart(fig, use_container_width=True)
     with col_info:
         st.subheader("🎯 Stratejik Analiz")
-        if st.session_state.geod_p >= 0.12: st.success("**GÜVENLİ BÖLGE**\nFiyat 0.12$ üzerinde.")
-        else: st.error("**RİSKLİ BÖLGE**\nFiyat 0.12$ altında!")
+        if st.session_state.geod_p >= 0.12: st.success("**GUVENLI BOLGE**")
+        else: st.error("**RISKLI BOLGE**")
 
 if st.session_state.last_results:
     st.divider()
-    st.header("📋 Hakediş Detayları")
-    res = st.session_state.last_results
-    df = res["df"]
-    sm1, sm2, sm3 = st.columns(3)
-    sm1.metric("Toplam Üretim (T)", f"{df['Toplam_Uretim'].sum():.2f}")
-    sm2.metric("Ödenen (T)", f"{df['Odenecek_Toplam_Token'].sum():.2f}")
-    sm3.metric("Bize Kalan (T)", f"{df['Bize_Net_Kalan_Token'].sum():.2f}")
+    df = st.session_state.last_results["df"]
     st.dataframe(df, use_container_width=True)
     
     st.subheader("📥 Raporlar")
     for i, m_name in enumerate(df['Musteri'].unique()):
         m_data = df[df['Musteri'] == m_name]
-        pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
+        pdf_bytes = create_pdf(m_name, m_data, st.session_state.last_results["kur_geod"], st.session_state.last_results["kur_usd"], st.session_state.last_results["donem"])
         col_m, col_b = st.columns([4, 1])
         col_m.write(f"📄 {m_name}")
-        col_b.download_button("İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"dl_{i}")
+        col_b.download_button("Indir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Rapor.pdf", key=f"dl_{i}")
