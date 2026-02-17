@@ -189,7 +189,14 @@ with st.sidebar:
                     })
                     p_bar.progress((index + 1) / len(source_df))
                 
-                st.session_state.last_results = {"df": pd.DataFrame(results), "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", "kur_geod": st.session_state.geod_p, "kur_usd": st.session_state.usd_t, "target": target_tl}
+                st.session_state.last_results = {
+                    "df": pd.DataFrame(results), 
+                    "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}",
+                    "ay": start_date.strftime("%B %Y"), # Ay bilgisi
+                    "kur_geod": st.session_state.geod_p, 
+                    "kur_usd": st.session_state.usd_t, 
+                    "target": target_tl
+                }
                 if kayit_adi: st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
 # --- 4. ANA EKRAN ---
@@ -205,8 +212,23 @@ if st.session_state.last_results:
     res = st.session_state.last_results
     df = res["df"]
     
+    # --- YÖNETİM ÖZETİ (TABLO ÜSTÜ) ---
+    st.subheader("📊 Dönem Finansal Özeti")
+    col_a, col_b, col_c, col_d = st.columns(4)
+    
+    with col_a:
+        st.info(f"📅 **Hesap Dönemi:**\n\n{res['ay']}")
+    with col_b:
+        st.success(f"🛰️ **Total GEOD Kazancı:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
+    with col_c:
+        st.warning(f"💸 **Total İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
+    with col_d:
+        st.error(f"📈 **Monspor Net GEOD Kazancı:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
+    
+    st.divider()
     st.header(f"📋 Hakediş Detayları (Hedef: {res['target']} TL)")
     
+    # Stil: 180 Altı Sarı Arkaplan + Lacivert Font
     def style_rows(row):
         if row.Toplam_GEOD_Kazanc < 180:
             return ['background-color: #ffffcc; color: #000080; font-weight: bold'] * len(row)
@@ -229,7 +251,6 @@ if st.session_state.last_results:
         pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
         col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
         
-        # --- WHATSAPP BUTON KONTROLÜ ---
         if tel and str(tel).strip() not in ["", "nan", "None", "90"]:
             msg_text = wp_mesaj_olustur(m_name, m_data, res['donem'], res['kur_geod'], res['kur_usd'])
             wp_url = f"https://wa.me/{tel}?text={urllib.parse.quote(msg_text)}"
