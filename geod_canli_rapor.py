@@ -15,10 +15,12 @@ st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
 PAYOUT_CUTOFF_TR = "08:30"
 LOW_PROD_THRESHOLD_DEFAULT = 180
+
 HTTP = requests.Session()
 
-TR_MAP = str.maketrans({"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"})
-
+TR_MAP = str.maketrans(
+    {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
+)
 
 # -------------------------
 # Utils
@@ -45,13 +47,13 @@ def normalize_phone(raw):
 def _pick_col(df: pd.DataFrame, candidates):
     """Excel kolon başlıklarını esnek yakalamak için."""
     cols = {str(c).strip(): c for c in df.columns}
-    # direkt eşleşme
     for k in candidates:
         if k in cols:
             return cols[k]
-    # case-insensitive / normalize
+
     def norm(s):
         return temizle(str(s)).strip().lower()
+
     ncols = {norm(k): v for k, v in cols.items()}
     for k in candidates:
         nk = norm(k)
@@ -73,7 +75,7 @@ def get_live_prices_cached():
         return 0.1500, 33.00
 
 def encrypt_param(data, key):
-    # Eski çalışan mantık: TOKEN -> 16 byte sabitlenip hem key hem iv
+    # TOKEN -> 16 byte sabitlenip hem key hem iv
     k_fixed = str(key).rjust(16, "0")[:16].encode("utf-8")
     cipher = AES.new(k_fixed, AES.MODE_CBC, iv=k_fixed)
     padded_data = pad(str(data).encode("utf-8"), 16)
@@ -152,30 +154,32 @@ def _get_sn_info(sn: str, client_id: str, token: str, url: str):
         r = HTTP.get(url, params=params, verify=False, timeout=15)
         return r.json()
     except Exception:
-        return {}
+        return {"statusCode": -1, "msg": "request_error", "data": {}}
+
 
 def _extract_online_and_ts(sninfo_resp: dict):
     """
     getSnInfo response:
+      statusCode == 200 OK
       data.online (1/0)
       data.timestamp (latest update time)
     """
-    data = None
-    if isinstance(sninfo_resp, dict):
-        d = sninfo_resp.get("data")
-        if isinstance(d, dict):
-            data = d
-    if not isinstance(data, dict):
-        data = {}
+    status_code = None
+    msg = ""
+    data = {}
 
-    online_val = data.get("online", None)
-    # online: 1 online, 0 offline
+    if isinstance(sninfo_resp, dict):
+        status_code = sninfo_resp.get("statusCode")
+        msg = str(sninfo_resp.get("msg", "") or "")
+        if isinstance(sninfo_resp.get("data"), dict):
+            data = sninfo_resp["data"]
+
     online = None
-    try:
-        if online_val is not None:
-            online = int(online_val)
-    except Exception:
-        online = None
+    if "online" in data:
+        try:
+            online = int(data.get("online"))
+        except Exception:
+            online = None
 
     ts_val = data.get("timestamp", "")
     ts_str = ""
@@ -191,36 +195,63 @@ def _extract_online_and_ts(sninfo_resp: dict):
         except Exception:
             ts_str = str(ts_val)
 
-    return online, ts_str
+    return status_code, msg, online, ts_str
 
 
 def offline_check_getsninfo(device_df: pd.DataFrame, client_id: str, token: str, url: str):
     """
-    device_df: SN + Is_Ortagi + Il + Konum
-    Offline = data.online == 0
+    Offline = online == 0
+    Ayrıca API hatası/limit durumlarını da görünür yap:
+      - statusCode != 200 => DURUM = ERROR / RATE_LIMIT
+      - online None => UNKNOWN
+    Bu satırları da listeleriz (operasyonel görünürlük için).
     """
     if device_df is None or device_df.empty:
-        return pd.DataFrame(columns=["SN", "Is_Ortagi", "Il", "Konum", "Online", "Son_Guncelleme"])
+        return pd.DataFrame(columns=["SN", "Is_Ortagi", "Il", "Konum", "Durum", "Son_Guncelleme"])
 
     rows = []
     p = st.progress(0)
     sns = device_df["SN"].astype(str).tolist()
     n = max(1, len(sns))
 
-    for i, sn in enumerate(sns):
-        resp = _get_sn_info(sn, client_id, token, url)
-        online, ts_str = _extract_online_and_ts(resp)
-
-        if online == 0:
-            meta = device_df.loc[device_df["SN"].astype(str) == str(sn)].iloc[0].to_dict()
-            rows.append({
+    def add_row(sn, meta, durum, ts_str):
+        rows.append(
+            {
                 "SN": str(sn),
                 "Is_Ortagi": meta.get("Is_Ortagi", ""),
                 "Il": meta.get("Il", ""),
                 "Konum": meta.get("Konum", ""),
-                "Online": online,
+                "Durum": durum,
                 "Son_Guncelleme": ts_str,
-            })
+            }
+        )
+
+    for i, sn in enumerate(sns):
+        meta = device_df.loc[device_df["SN"].astype(str) == str(sn)].iloc[0].to_dict()
+
+        # Throttle: rate-limit azaltır
+        time.sleep(0.08)
+
+        resp = _get_sn_info(sn, client_id, token, url)
+        status_code, msg, online, ts_str = _extract_online_and_ts(resp)
+
+        # Rate-limit yakala: dokümanda 602 excessive request frequency var.
+        if status_code == 602 or "excessive" in msg.lower():
+            # kısa bekle + 1 retry
+            time.sleep(0.8)
+            resp2 = _get_sn_info(sn, client_id, token, url)
+            status_code, msg, online, ts_str = _extract_online_and_ts(resp2)
+
+        if status_code != 200:
+            # hata olanları da listeye alalım (kaçırmayalım)
+            durum = "RATE_LIMIT" if status_code == 602 else "ERROR"
+            add_row(sn, meta, durum, ts_str)
+        else:
+            if online == 0:
+                add_row(sn, meta, "OFFLINE", ts_str)
+            elif online is None:
+                add_row(sn, meta, "UNKNOWN", ts_str)
+            # online==1 ise listeye alma
 
         p.progress((i + 1) / n)
 
@@ -262,7 +293,7 @@ def render_offline_banner(offline_count: int):
       }}
     </style>
     <div class="offline-banner">
-      ⚠️ OFFLINE CİHAZLAR VAR
+      ⚠️ OFFLINE / HATA DURUMU OLAN CİHAZLAR VAR
       <span class="offline-badge">Adet: {offline_count}</span>
       <span style="font-weight:600; opacity:0.9; margin-left:10px;">
         (Aşağıdan listeyi görebilirsin)
@@ -413,8 +444,7 @@ with st.sidebar:
             device_df = None
 
             if input_type == "Excel Yükle" and uploaded_file:
-                df_raw = pd.read_excel(uploaded_file, dtype={"Telefon": str})
-                # zorunlu kolonlar (mevcut çalışma ile uyumlu)
+                df_raw = pd.read_excel(uploaded_file, dtype={"Telefon": str, "Miner Numarası": str, "SN": str})
                 col_partner = _pick_col(df_raw, ["İş Ortağı", "Is Ortagi", "Musteri", "Partner"])
                 col_sn = _pick_col(df_raw, ["Miner Numarası", "Miner Numarasi", "SN", "Serial", "Seri No"])
                 col_kp = _pick_col(df_raw, ["Kar Payı", "Kar Payi", "KP", "Kar_Payi"])
@@ -424,19 +454,18 @@ with st.sidebar:
                     st.error("Excel içinde İş Ortağı / SN / Kar Payı kolonları bulunamadı.")
                     st.stop()
 
-                # opsiyonel kolonlar (offline listesi için)
                 col_il = _pick_col(df_raw, ["İl", "Il", "Sehir", "City"])
                 col_konum = _pick_col(df_raw, ["Konum", "Lokasyon", "Location", "Adres", "Address"])
 
                 source_df = pd.DataFrame({
                     "Musteri": df_raw[col_partner],
-                    "SN": df_raw[col_sn].astype(str),
+                    "SN": df_raw[col_sn].astype(str).str.strip(),
                     "Kar_Payi": df_raw[col_kp],
                     "Telefon": df_raw[col_tel] if col_tel else None,
                 })
 
                 device_df = pd.DataFrame({
-                    "SN": df_raw[col_sn].astype(str),
+                    "SN": df_raw[col_sn].astype(str).str.strip(),
                     "Is_Ortagi": df_raw[col_partner].astype(str),
                     "Il": df_raw[col_il].astype(str) if col_il else "",
                     "Konum": df_raw[col_konum].astype(str) if col_konum else "",
@@ -445,13 +474,13 @@ with st.sidebar:
             elif input_type == "Manuel SN" and sn_manual:
                 source_df = pd.DataFrame([{
                     "Musteri": m_manual,
-                    "SN": str(sn_manual),
+                    "SN": str(sn_manual).strip(),
                     "Kar_Payi": kp_manual / 100,
                     "Telefon": tel_manual,
                 }])
 
                 device_df = pd.DataFrame([{
-                    "SN": str(sn_manual),
+                    "SN": str(sn_manual).strip(),
                     "Is_Ortagi": str(m_manual),
                     "Il": "",
                     "Konum": "",
@@ -461,13 +490,11 @@ with st.sidebar:
                 st.warning("Kaynak veri yok.")
                 st.stop()
 
-            # device_df sakla (offline takibi için)
             st.session_state.device_df = device_df
 
             client_id = st.secrets["CLIENT_ID"]
             token = st.secrets["TOKEN"]
 
-            # performans -> payout +1 gün
             payout_start = start_date + timedelta(days=1)
             payout_end = end_date + timedelta(days=1)
 
@@ -575,20 +602,9 @@ if menu == "📊 Yeni Sorgu":
         if st.session_state.device_df is None or st.session_state.device_df.empty:
             st.info("Önce Excel/Manuel listeyi girip HESAPLA yap (listeyi oluşturmak için).")
         else:
-            # getSnInfo URL: istersen secrets ile override edebilirsin
             get_sn_info_url = st.secrets.get("GET_SN_INFO_URL", "https://consoleresapi.geodnet.com/getSnInfo").strip()
 
-            # 30 dk auto refresh
             auto_ok = False
-            try:
-                # Streamlit core'da varsa:
-                st.autorefresh  # type: ignore
-                # Bazı sürümlerde yok - aşağıdaki except'e düşer
-                auto_ok = False
-            except Exception:
-                auto_ok = False
-
-            # streamlit-autorefresh varsa kullan
             try:
                 from streamlit_autorefresh import st_autorefresh
                 st_autorefresh(interval=30 * 60 * 1000, key="offline_autorefresh_30m")
@@ -600,9 +616,8 @@ if menu == "📊 Yeni Sorgu":
             do_check = colA.button("OFFLINE CHECK", type="primary", use_container_width=True)
             manual_refresh = colB.button("Yenile", use_container_width=True)
             if not auto_ok:
-                colC.warning("30 dk otomatik yenileme için: `pip install streamlit-autorefresh` (opsiyonel).")
+                colC.warning("30 dk otomatik yenileme (opsiyonel): `pip install streamlit-autorefresh`")
 
-            # ilk girişte veya butonda çek
             if do_check or manual_refresh or (st.session_state.offline_results is None):
                 if ("CLIENT_ID" not in st.secrets) or ("TOKEN" not in st.secrets):
                     st.error("Secrets eksik (CLIENT_ID/TOKEN).")
@@ -626,16 +641,15 @@ if menu == "📊 Yeni Sorgu":
 
                 render_offline_banner(len(off_df))
                 if off_df.empty:
-                    st.success("Offline cihaz yok 🎉")
+                    st.success("Offline/ERROR/UNKNOWN cihaz yok 🎉")
                 else:
-                    # İstenen kolonlar: SN, İş Ortağı, İl, Konum
                     st.dataframe(
-                        off_df[["SN", "Is_Ortagi", "Il", "Konum", "Son_Guncelleme"]],
+                        off_df[["SN", "Is_Ortagi", "Il", "Konum", "Durum", "Son_Guncelleme"]],
                         use_container_width=True,
-                        height=360
+                        height=380
                     )
 
-    # ---- ÖDÜL HESAPLAMA MODU (mevcut ekran) ----
+    # ---- ÖDÜL HESAPLAMA MODU ----
     else:
         if st.session_state.last_results:
             st.divider()
@@ -645,10 +659,14 @@ if menu == "📊 Yeni Sorgu":
 
             st.subheader("📊 Dönem Finansal Özeti")
             col_a, col_b, col_c, col_d = st.columns(4)
-            with col_a: st.info(f"📅 **Hesap Dönemi (Performans):**\n\n{res['donem']}")
-            with col_b: st.success(f"🛰️ **Total GEOD Kazancı:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
-            with col_c: st.warning(f"💸 **Total İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
-            with col_d: st.error(f"📈 **Monspor Net GEOD Kazancı:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
+            with col_a:
+                st.info(f"📅 **Hesap Dönemi (Performans):**\n\n{res['donem']}")
+            with col_b:
+                st.success(f"🛰️ **Total GEOD Kazancı:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
+            with col_c:
+                st.warning(f"💸 **Total İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
+            with col_d:
+                st.error(f"📈 **Monspor Net GEOD Kazancı:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
 
             st.divider()
             st.subheader("📈 Günlük GEOD Üretim Trendi (Performans Günleri)")
@@ -702,7 +720,7 @@ if menu == "📊 Yeni Sorgu":
                     )
                 else:
                     col_w.markdown(
-                        f'<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>',
+                        '<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>',
                         unsafe_allow_html=True
                     )
         else:
