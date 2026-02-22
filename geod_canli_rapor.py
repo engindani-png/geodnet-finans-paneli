@@ -34,6 +34,31 @@ def safe_float(x, default=0.0):
     except Exception:
         return default
 
+def normalize_phone(raw):
+    tel = str(raw).replace(".0", "").strip() if raw is not None else ""
+    if tel.startswith("5"):
+        tel = "90" + tel
+    elif tel.startswith("0"):
+        tel = "9" + tel
+    return tel
+
+def _pick_col(df: pd.DataFrame, candidates):
+    """Excel kolon başlıklarını esnek yakalamak için."""
+    cols = {str(c).strip(): c for c in df.columns}
+    # direkt eşleşme
+    for k in candidates:
+        if k in cols:
+            return cols[k]
+    # case-insensitive / normalize
+    def norm(s):
+        return temizle(str(s)).strip().lower()
+    ncols = {norm(k): v for k, v in cols.items()}
+    for k in candidates:
+        nk = norm(k)
+        if nk in ncols:
+            return ncols[nk]
+    return None
+
 @st.cache_data(ttl=600, show_spinner=False)
 def get_live_prices_cached():
     try:
@@ -75,14 +100,10 @@ def parse_reward_date(item: dict):
                 pass
     return None
 
-def normalize_phone(raw):
-    tel = str(raw).replace(".0", "").strip() if raw is not None else ""
-    if tel.startswith("5"):
-        tel = "90" + tel
-    elif tel.startswith("0"):
-        tel = "9" + tel
-    return tel
 
+# -------------------------
+# API Calls
+# -------------------------
 def get_all_rewards(sn: str, payout_start: date, payout_end: date, client_id: str, token: str):
     all_data = []
     curr = payout_start
@@ -114,8 +135,100 @@ def get_all_rewards(sn: str, payout_start: date, payout_end: date, client_id: st
     return all_data
 
 
+def _get_sn_info(sn: str, client_id: str, token: str, url: str):
+    """
+    Dokümana göre /getSnInfo:
+      clientId = plain text
+      timeStamp = encrypted (ms)
+      sn = encrypted
+    """
+    ts = str(int(time.time() * 1000))
+    params = {
+        "clientId": client_id,
+        "timeStamp": encrypt_param(ts, token),
+        "sn": encrypt_param(sn, token),
+    }
+    try:
+        r = HTTP.get(url, params=params, verify=False, timeout=15)
+        return r.json()
+    except Exception:
+        return {}
+
+def _extract_online_and_ts(sninfo_resp: dict):
+    """
+    getSnInfo response:
+      data.online (1/0)
+      data.timestamp (latest update time)
+    """
+    data = None
+    if isinstance(sninfo_resp, dict):
+        d = sninfo_resp.get("data")
+        if isinstance(d, dict):
+            data = d
+    if not isinstance(data, dict):
+        data = {}
+
+    online_val = data.get("online", None)
+    # online: 1 online, 0 offline
+    online = None
+    try:
+        if online_val is not None:
+            online = int(online_val)
+    except Exception:
+        online = None
+
+    ts_val = data.get("timestamp", "")
+    ts_str = ""
+    if ts_val:
+        try:
+            iv = int(ts_val)
+            if iv > 10_000_000_000:
+                ts_str = datetime.utcfromtimestamp(iv / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            elif iv > 1_000_000_000:
+                ts_str = datetime.utcfromtimestamp(iv).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                ts_str = str(ts_val)
+        except Exception:
+            ts_str = str(ts_val)
+
+    return online, ts_str
+
+
+def offline_check_getsninfo(device_df: pd.DataFrame, client_id: str, token: str, url: str):
+    """
+    device_df: SN + Is_Ortagi + Il + Konum
+    Offline = data.online == 0
+    """
+    if device_df is None or device_df.empty:
+        return pd.DataFrame(columns=["SN", "Is_Ortagi", "Il", "Konum", "Online", "Son_Guncelleme"])
+
+    rows = []
+    p = st.progress(0)
+    sns = device_df["SN"].astype(str).tolist()
+    n = max(1, len(sns))
+
+    for i, sn in enumerate(sns):
+        resp = _get_sn_info(sn, client_id, token, url)
+        online, ts_str = _extract_online_and_ts(resp)
+
+        if online == 0:
+            meta = device_df.loc[device_df["SN"].astype(str) == str(sn)].iloc[0].to_dict()
+            rows.append({
+                "SN": str(sn),
+                "Is_Ortagi": meta.get("Is_Ortagi", ""),
+                "Il": meta.get("Il", ""),
+                "Konum": meta.get("Konum", ""),
+                "Online": online,
+                "Son_Guncelleme": ts_str,
+            })
+
+        p.progress((i + 1) / n)
+
+    return pd.DataFrame(rows)
+
+
 # -------------------------
-# UI helpers (aynı görsel)
+# UI helpers (görsel aynı)
 # -------------------------
 def render_offline_banner(offline_count: int):
     if offline_count <= 0:
@@ -222,67 +335,16 @@ def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
 
 
 # -------------------------
-# Offline check logic
-# -------------------------
-def expected_latest_payout_date_tr(now: datetime) -> date:
-    # TR lokal zaman kabulü: server TR'de çalışıyorsa enough
-    # 08:30 öncesi -> en son beklenen payout: dün
-    # 08:30 sonrası -> bugün
-    cutoff_h, cutoff_m = 8, 30
-    if (now.hour, now.minute) >= (cutoff_h, cutoff_m):
-        return now.date()
-    return (now.date() - timedelta(days=1))
-
-def offline_check(sn_list, client_id, token):
-    """
-    Her SN için son 3-4 gün payout’u çekip (hızlı), 'bugünün payout'u gelmiş mi' kontrol eder.
-    Offline = expected payout tarihinden geri kalmışsa
-    """
-    now = datetime.now()
-    exp = expected_latest_payout_date_tr(now)
-
-    # Son 5 gün aralığı yeterli (payout date üzerinden)
-    payout_start = exp - timedelta(days=5)
-    payout_end = exp
-
-    offline_rows = []
-    p = st.progress(0)
-    n = max(1, len(sn_list))
-
-    for i, sn in enumerate(sn_list):
-        raw = get_all_rewards(sn, payout_start, payout_end, client_id, token)
-
-        last_payout = None
-        # hızlı: tarihlerden max al
-        for d in raw:
-            pd_ = parse_reward_date(d)
-            if pd_ and (last_payout is None or pd_ > last_payout):
-                last_payout = pd_
-
-        is_offline = (last_payout is None) or (last_payout < exp)
-        if is_offline:
-            offline_rows.append({
-                "SN": sn,
-                "Son_Payout_Tarihi": str(last_payout) if last_payout else "",
-                "Beklenen_Payout": str(exp),
-            })
-
-        p.progress((i + 1) / n)
-
-    return pd.DataFrame(offline_rows), exp
-
-
-# -------------------------
 # Session State
 # -------------------------
 if "arsiv" not in st.session_state:
     st.session_state.arsiv = {}
 if "last_results" not in st.session_state:
     st.session_state.last_results = None
+if "device_df" not in st.session_state:
+    st.session_state.device_df = None
 if "offline_results" not in st.session_state:
     st.session_state.offline_results = None
-if "last_offline_check_ts" not in st.session_state:
-    st.session_state.last_offline_check_ts = None
 if "geod_p" not in st.session_state:
     g_val, u_val = get_live_prices_cached()
     st.session_state.geod_p = g_val
@@ -290,7 +352,7 @@ if "geod_p" not in st.session_state:
 
 
 # -------------------------
-# Sidebar (görseli bozmadan)
+# Sidebar
 # -------------------------
 with st.sidebar:
     st.markdown("<h1 style='color: #FF4B4B;'>🛰️ MonsPro</h1>", unsafe_allow_html=True)
@@ -348,25 +410,59 @@ with st.sidebar:
                 st.stop()
 
             source_df = None
+            device_df = None
+
             if input_type == "Excel Yükle" and uploaded_file:
-                df_raw = pd.read_excel(uploaded_file, dtype={"Telefon": str, "Miner Numarası": str})
+                df_raw = pd.read_excel(uploaded_file, dtype={"Telefon": str})
+                # zorunlu kolonlar (mevcut çalışma ile uyumlu)
+                col_partner = _pick_col(df_raw, ["İş Ortağı", "Is Ortagi", "Musteri", "Partner"])
+                col_sn = _pick_col(df_raw, ["Miner Numarası", "Miner Numarasi", "SN", "Serial", "Seri No"])
+                col_kp = _pick_col(df_raw, ["Kar Payı", "Kar Payi", "KP", "Kar_Payi"])
+                col_tel = _pick_col(df_raw, ["Telefon", "Tel", "Phone"])
+
+                if col_partner is None or col_sn is None or col_kp is None:
+                    st.error("Excel içinde İş Ortağı / SN / Kar Payı kolonları bulunamadı.")
+                    st.stop()
+
+                # opsiyonel kolonlar (offline listesi için)
+                col_il = _pick_col(df_raw, ["İl", "Il", "Sehir", "City"])
+                col_konum = _pick_col(df_raw, ["Konum", "Lokasyon", "Location", "Adres", "Address"])
+
                 source_df = pd.DataFrame({
-                    "Musteri": df_raw["İş Ortağı"],
-                    "SN": df_raw["Miner Numarası"],
-                    "Kar_Payi": df_raw["Kar Payı"],
-                    "Telefon": df_raw.get("Telefon", None),
+                    "Musteri": df_raw[col_partner],
+                    "SN": df_raw[col_sn].astype(str),
+                    "Kar_Payi": df_raw[col_kp],
+                    "Telefon": df_raw[col_tel] if col_tel else None,
                 })
+
+                device_df = pd.DataFrame({
+                    "SN": df_raw[col_sn].astype(str),
+                    "Is_Ortagi": df_raw[col_partner].astype(str),
+                    "Il": df_raw[col_il].astype(str) if col_il else "",
+                    "Konum": df_raw[col_konum].astype(str) if col_konum else "",
+                })
+
             elif input_type == "Manuel SN" and sn_manual:
                 source_df = pd.DataFrame([{
                     "Musteri": m_manual,
-                    "SN": sn_manual,
+                    "SN": str(sn_manual),
                     "Kar_Payi": kp_manual / 100,
                     "Telefon": tel_manual,
+                }])
+
+                device_df = pd.DataFrame([{
+                    "SN": str(sn_manual),
+                    "Is_Ortagi": str(m_manual),
+                    "Il": "",
+                    "Konum": "",
                 }])
 
             if source_df is None or source_df.empty:
                 st.warning("Kaynak veri yok.")
                 st.stop()
+
+            # device_df sakla (offline takibi için)
+            st.session_state.device_df = device_df
 
             client_id = st.secrets["CLIENT_ID"]
             token = st.secrets["TOKEN"]
@@ -452,7 +548,6 @@ with st.sidebar:
                 "target": target_tl,
                 "low_threshold": thr,
                 "daily": daily,
-                "sn_list": df_res["SN"].astype(str).tolist(),
             }
 
             if kayit_adi:
@@ -460,7 +555,7 @@ with st.sidebar:
 
 
 # -------------------------
-# Main UI (görsel aynı)
+# Main UI
 # -------------------------
 st.divider()
 c1, c2, c3 = st.columns(3)
@@ -475,19 +570,28 @@ if menu == "📊 Yeni Sorgu":
     # ---- OFFLINE TAKİBİ MODU ----
     if mode == "Offline Takibi":
         st.divider()
-        st.subheader("🛑 Offline Takibi")
+        st.subheader("🛑 Offline Takibi (getSnInfo)")
 
-        if not st.session_state.last_results or not st.session_state.last_results.get("sn_list"):
-            st.info("Önce Excel/Manuel listeyi girip en az 1 kez HESAPLA yap (listeyi oluşturmak için).")
+        if st.session_state.device_df is None or st.session_state.device_df.empty:
+            st.info("Önce Excel/Manuel listeyi girip HESAPLA yap (listeyi oluşturmak için).")
         else:
-            sn_list = st.session_state.last_results["sn_list"]
+            # getSnInfo URL: istersen secrets ile override edebilirsin
+            get_sn_info_url = st.secrets.get("GET_SN_INFO_URL", "https://consoleresapi.geodnet.com/getSnInfo").strip()
 
-            # Auto refresh 30 dk (varsa)
-            # Not: Streamlit sürümüne göre değişebilir.
+            # 30 dk auto refresh
+            auto_ok = False
             try:
-                st_autorefresh = st.experimental_data_editor  # dummy to test presence? (ignore)
-                from streamlit_autorefresh import st_autorefresh as _st_autorefresh
-                _st_autorefresh(interval=30 * 60 * 1000, key="offline_autorefresh_30m")
+                # Streamlit core'da varsa:
+                st.autorefresh  # type: ignore
+                # Bazı sürümlerde yok - aşağıdaki except'e düşer
+                auto_ok = False
+            except Exception:
+                auto_ok = False
+
+            # streamlit-autorefresh varsa kullan
+            try:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=30 * 60 * 1000, key="offline_autorefresh_30m")
                 auto_ok = True
             except Exception:
                 auto_ok = False
@@ -496,32 +600,40 @@ if menu == "📊 Yeni Sorgu":
             do_check = colA.button("OFFLINE CHECK", type="primary", use_container_width=True)
             manual_refresh = colB.button("Yenile", use_container_width=True)
             if not auto_ok:
-                colC.warning("Otomatik 30 dk yenileme için `pip install streamlit-autorefresh` gerekir. Şimdilik Yenile butonunu kullan.")
+                colC.warning("30 dk otomatik yenileme için: `pip install streamlit-autorefresh` (opsiyonel).")
 
+            # ilk girişte veya butonda çek
             if do_check or manual_refresh or (st.session_state.offline_results is None):
                 if ("CLIENT_ID" not in st.secrets) or ("TOKEN" not in st.secrets):
                     st.error("Secrets eksik (CLIENT_ID/TOKEN).")
                 else:
                     with st.spinner("Offline kontrol ediliyor..."):
-                        off_df, expected = offline_check(sn_list, st.secrets["CLIENT_ID"], st.secrets["TOKEN"])
+                        off_df = offline_check_getsninfo(
+                            st.session_state.device_df,
+                            st.secrets["CLIENT_ID"],
+                            st.secrets["TOKEN"],
+                            get_sn_info_url
+                        )
                     st.session_state.offline_results = {
                         "df": off_df,
-                        "expected": str(expected),
                         "checked_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
                     }
 
             if st.session_state.offline_results:
                 off_df = st.session_state.offline_results["df"]
                 checked_at = st.session_state.offline_results["checked_at"]
-                expected = st.session_state.offline_results["expected"]
-
-                st.caption(f"Son kontrol: **{checked_at}** | Beklenen payout tarihi: **{expected}**")
+                st.caption(f"Son kontrol: **{checked_at}**")
 
                 render_offline_banner(len(off_df))
                 if off_df.empty:
                     st.success("Offline cihaz yok 🎉")
                 else:
-                    st.dataframe(off_df, use_container_width=True, height=360)
+                    # İstenen kolonlar: SN, İş Ortağı, İl, Konum
+                    st.dataframe(
+                        off_df[["SN", "Is_Ortagi", "Il", "Konum", "Son_Guncelleme"]],
+                        use_container_width=True,
+                        height=360
+                    )
 
     # ---- ÖDÜL HESAPLAMA MODU (mevcut ekran) ----
     else:
@@ -597,7 +709,6 @@ if menu == "📊 Yeni Sorgu":
             st.info("Henüz sonuç yok. Sidebar’dan listeyi girip HESAPLA’ya bas.")
 
 else:
-    # Arşiv ekranı (minimal: mevcut yapıyı bozmuyoruz)
     st.header("📚 Arşiv")
     if not st.session_state.arsiv:
         st.info("Arşiv boş.")
