@@ -760,7 +760,7 @@ def main():
                 f"Toplam GEOD: {total_geod:.6f}\n"
                 + (f"Toplam TL: {total_tl:,.2f}\n" if np.isfinite(total_tl) else "")
                 + (f"Düşük üretim cihaz: {low_cnt}\n" if low_cnt else "")
-                f"Not: Ödül kesim saati TR 08:30'a göre düzeltilmiş hesap.\n"
+                +f"Not: Ödül kesim saati TR 08:30'a göre düzeltilmiş hesap.\n"
             )
             st.session_state["wa_msg"] = msg
 
@@ -779,3 +779,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
