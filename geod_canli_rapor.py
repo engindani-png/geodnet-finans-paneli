@@ -1,505 +1,740 @@
-# app.py
-# MonsPro - GEODNET Token Hesaplama & Offline Takip (Throttle + Retry + Lookback)
-# 23.02.2026 patch: per-device delay, retry/backoff, wider time window for online/offline queries
-
-import os
-import time
-import json
-import math
-import random
-import datetime as dt
-from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
-
-import requests
-import pandas as pd
 import streamlit as st
+import requests
+import time
+import binascii
+import pandas as pd
+import urllib.parse
+from datetime import datetime, timedelta, date
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+from fpdf import FPDF
+import warnings
 
-# =========================
-# CONFIG (Edit to match your existing endpoints if different)
-# =========================
+warnings.filterwarnings("ignore")
+st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
-# These are placeholders; replace with the exact endpoints you used yesterday if they differ.
-GEODNET_BASE_URL = os.getenv("GEODNET_BASE_URL", "https://api.geodnet.com")  # keep same if already set
-REWARDS_TIMELINE_ENDPOINT = os.getenv("REWARDS_TIMELINE_ENDPOINT", f"{GEODNET_BASE_URL}/api/v1/rewards/getRewardsTimeLine")
-MINER_STATUS_ENDPOINT = os.getenv("MINER_STATUS_ENDPOINT", f"{GEODNET_BASE_URL}/api/v1/minerStatus")  # <-- adjust to your real one
+PAYOUT_CUTOFF_TR = "08:30"
+LOW_PROD_THRESHOLD_DEFAULT = 180
 
-# Auth
-GEODNET_CLIENT_ID = os.getenv("GEODNET_CLIENT_ID", "").strip()
-GEODNET_TOKEN = os.getenv("GEODNET_TOKEN", "").strip()
+HTTP = requests.Session()
 
-# =========================
-# UI / APP SETTINGS
-# =========================
+TR_MAP = str.maketrans(
+    {"ş": "s", "Ş": "S", "ğ": "g", "Ğ": "G", "ü": "u", "Ü": "U", "ı": "i", "İ": "I", "ö": "o", "Ö": "O", "ç": "c", "Ç": "C"}
+)
 
-st.set_page_config(page_title="MonsPro | GEODNET Token Hesaplama & Offline Takip", layout="wide")
-
-st.title("MonsPro | GEODNET Token Hesaplama & Offline Takip")
-st.caption("Patch: API throttle (2–3s), retry/backoff, lookback penceresi büyütme (offline kaçırmayı azaltır).")
-
-# =========================
-# Helpers
-# =========================
-
-@dataclass
-class ThrottleConfig:
-    per_device_delay_sec: float = 2.5     # 2-3 sec suggested
-    max_retries: int = 3
-    base_backoff_sec: float = 1.2         # exponential backoff base
-    jitter_sec: float = 0.35              # random jitter
-    timeout_sec: float = 20.0             # request timeout
-
-def _now_utc() -> dt.datetime:
-    return dt.datetime.now(dt.timezone.utc)
-
-def _to_iso_z(t: dt.datetime) -> str:
-    # ISO8601 with Z
-    return t.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# -------------------------
+# Utils
+# -------------------------
+def temizle(text):
+    if text is None:
+        return ""
+    return str(text).translate(TR_MAP)
 
 def safe_float(x, default=0.0):
     try:
-        if x is None or (isinstance(x, float) and math.isnan(x)):
-            return default
         return float(x)
     except Exception:
         return default
 
-def normalize_sn(sn: str) -> str:
-    if sn is None:
-        return ""
-    return str(sn).strip()
+def normalize_phone(raw):
+    tel = str(raw).replace(".0", "").strip() if raw is not None else ""
+    if tel.startswith("5"):
+        tel = "90" + tel
+    elif tel.startswith("0"):
+        tel = "9" + tel
+    return tel
 
-def sleep_with_jitter(sec: float, jitter: float):
-    if sec <= 0:
-        return
-    time.sleep(max(0.0, sec + random.uniform(-jitter, jitter)))
+def _pick_col(df: pd.DataFrame, candidates):
+    """Excel kolon başlıklarını esnek yakalamak için."""
+    cols = {str(c).strip(): c for c in df.columns}
+    for k in candidates:
+        if k in cols:
+            return cols[k]
 
-# =========================
-# HTTP (Retry + Backoff)
-# =========================
+    def norm(s):
+        return temizle(str(s)).strip().lower()
 
-def geodnet_headers() -> Dict[str, str]:
-    # Keep consistent with your existing working code.
-    # If your yesterday code used different header keys, adjust here.
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if GEODNET_TOKEN:
-        headers["Authorization"] = f"Bearer {GEODNET_TOKEN}"
-    if GEODNET_CLIENT_ID:
-        headers["X-Client-Id"] = GEODNET_CLIENT_ID
-    return headers
+    ncols = {norm(k): v for k, v in cols.items()}
+    for k in candidates:
+        nk = norm(k)
+        if nk in ncols:
+            return ncols[nk]
+    return None
 
-def post_with_retry(url: str, payload: Dict[str, Any], cfg: ThrottleConfig) -> Tuple[bool, Optional[Dict[str, Any]], str]:
-    """
-    Returns: (ok, json, err_msg)
-    Retries on network errors / 429 / 5xx.
-    """
-    headers = geodnet_headers()
+@st.cache_data(ttl=600, show_spinner=False)
+def get_live_prices_cached():
+    try:
+        res = HTTP.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=geodnet&vs_currencies=usd",
+            timeout=5,
+        ).json()
+        geod_p = float(res["geodnet"]["usd"])
+        usd_t = float(HTTP.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()["rates"]["TRY"])
+        return geod_p, usd_t
+    except Exception:
+        return 0.1500, 33.00
 
-    last_err = ""
-    for attempt in range(1, cfg.max_retries + 1):
+def encrypt_param(data, key):
+    # TOKEN -> 16 byte sabitlenip hem key hem iv
+    k_fixed = str(key).rjust(16, "0")[:16].encode("utf-8")
+    cipher = AES.new(k_fixed, AES.MODE_CBC, iv=k_fixed)
+    padded_data = pad(str(data).encode("utf-8"), 16)
+    return binascii.hexlify(cipher.encrypt(padded_data)).decode("utf-8")
+
+def parse_reward_date(item: dict):
+    candidates = ("date", "day", "rewardDate", "createDate", "time", "timestamp", "ts")
+    for k in candidates:
+        v = item.get(k)
+        if not v:
+            continue
         try:
-            r = requests.post(url, headers=headers, data=json.dumps(payload), timeout=cfg.timeout_sec)
-
-            # Retryable statuses
-            if r.status_code in (429, 500, 502, 503, 504):
-                last_err = f"HTTP {r.status_code}: {r.text[:200]}"
-                backoff = (cfg.base_backoff_sec ** attempt)
-                sleep_with_jitter(backoff, cfg.jitter_sec)
-                continue
-
-            # Non-OK
-            if not (200 <= r.status_code < 300):
-                return False, None, f"HTTP {r.status_code}: {r.text[:400]}"
-
-            # Parse JSON
+            iv = int(v)
+            if iv > 10_000_000_000:  # ms
+                return datetime.utcfromtimestamp(iv / 1000).date()
+            if iv > 1_000_000_000:  # s
+                return datetime.utcfromtimestamp(iv).date()
+        except Exception:
+            pass
+        if isinstance(v, str) and len(v) >= 10:
             try:
-                return True, r.json(), ""
+                return datetime.strptime(v[:10], "%Y-%m-%d").date()
             except Exception:
-                return False, None, "JSON parse error"
+                pass
+    return None
 
-        except requests.RequestException as e:
-            last_err = str(e)
-            backoff = (cfg.base_backoff_sec ** attempt)
-            sleep_with_jitter(backoff, cfg.jitter_sec)
 
-    return False, None, f"Retry failed: {last_err}"
-
-# =========================
-# Business Logic: Rewards + Online/Offline
-# =========================
-
-def fetch_rewards_timeline(sn: str, start_iso: str, end_iso: str, cfg: ThrottleConfig) -> Tuple[bool, float, str]:
-    """
-    Fetch total GEOD rewards for the SN in given window.
-    Replace payload keys to match your working implementation if needed.
-    """
-    payload = {
-        "sn": sn,
-        "startTime": start_iso,
-        "endTime": end_iso,
-    }
-
-    ok, js, err = post_with_retry(REWARDS_TIMELINE_ENDPOINT, payload, cfg)
-    if not ok:
-        return False, 0.0, err
-
-    # Adjust parsing to match your API response shape from yesterday
-    # Example patterns:
-    #   js["data"] = [{"reward": 1.23}, ...]
-    #   js["totalReward"] = 12.3
-    total = 0.0
-
-    try:
-        if isinstance(js, dict) and "totalReward" in js:
-            total = safe_float(js.get("totalReward", 0.0), 0.0)
-        elif isinstance(js, dict) and "data" in js and isinstance(js["data"], list):
-            for row in js["data"]:
-                total += safe_float(row.get("reward", 0.0), 0.0)
-        else:
-            # fallback
-            total = safe_float(js.get("reward", 0.0), 0.0)
-    except Exception:
-        total = 0.0
-
-    return True, total, ""
-
-def fetch_miner_status(sn: str, lookback_hours: int, cfg: ThrottleConfig) -> Tuple[bool, str, str, Optional[str]]:
-    """
-    Returns: (ok, status, err, last_seen_iso)
-    status: "online" | "offline" | "unknown"
-    - lookback_hours enlarged to reduce missed offline devices when one poll fails
-    Replace payload/parse to match your existing minerstatus query.
-
-    Many APIs expose either:
-      - lastSeen timestamp
-      - online boolean
-      - status string
-    We'll try to infer from common fields.
-    """
-    end_t = _now_utc()
-    start_t = end_t - dt.timedelta(hours=int(lookback_hours))
-
-    payload = {
-        "sn": sn,
-        "startTime": _to_iso_z(start_t),
-        "endTime": _to_iso_z(end_t),
-    }
-
-    ok, js, err = post_with_retry(MINER_STATUS_ENDPOINT, payload, cfg)
-    if not ok:
-        return False, "unknown", err, None
-
-    # ---- Parse flexibly (adjust to your exact schema if needed)
-    status = "unknown"
-    last_seen = None
-
-    try:
-        # Example 1: { data: { online: true, lastSeen: "..."} }
-        data = js.get("data", js)
-
-        if isinstance(data, dict):
-            if "online" in data:
-                status = "online" if bool(data.get("online")) else "offline"
-            elif "status" in data:
-                s = str(data.get("status")).lower()
-                if "on" in s:
-                    status = "online"
-                elif "off" in s:
-                    status = "offline"
-            if "lastSeen" in data:
-                last_seen = str(data.get("lastSeen"))
-            elif "last_seen" in data:
-                last_seen = str(data.get("last_seen"))
-
-        # Example 2: { data: [ {ts, online}, ... ] } -> take latest
-        if status == "unknown" and isinstance(js.get("data"), list) and js["data"]:
-            last = js["data"][-1]
-            if isinstance(last, dict):
-                if "online" in last:
-                    status = "online" if bool(last.get("online")) else "offline"
-                if "ts" in last:
-                    last_seen = str(last.get("ts"))
-                if "time" in last and not last_seen:
-                    last_seen = str(last.get("time"))
-
-    except Exception:
-        status = "unknown"
-
-    return True, status, "", last_seen
-
-# =========================
-# Excel / Manual SN input
-# =========================
-
-def load_sn_table(uploaded_file) -> pd.DataFrame:
-    df = pd.read_excel(uploaded_file)
-    # Smart column match: try to find SN column automatically
-    cols = {c.lower(): c for c in df.columns}
-    sn_col = None
-    for key in ["sn", "serial", "serialno", "serial_no", "seri", "seri no", "serial number", "device_sn"]:
-        if key in cols:
-            sn_col = cols[key]
-            break
-    if sn_col is None:
-        # fallback: first column
-        sn_col = df.columns[0]
-
-    df = df.copy()
-    df["SN"] = df[sn_col].astype(str).map(normalize_sn)
-
-    # optional: partner / city / location mapping (keep your yesterday fields if you have them)
-    def find_col(cands):
-        for k in cands:
-            if k in cols:
-                return cols[k]
-        return None
-
-    partner_col = find_col(["iş ortağı", "is ortagi", "partner", "bayi", "reseller"])
-    city_col = find_col(["il", "şehir", "sehir", "city"])
-    loc_col = find_col(["konum", "lokasyon", "location", "adres", "address"])
-
-    if partner_col:
-        df["İş Ortağı"] = df[partner_col].astype(str)
-    else:
-        df["İş Ortağı"] = ""
-
-    if city_col:
-        df["İl"] = df[city_col].astype(str)
-    else:
-        df["İl"] = ""
-
-    if loc_col:
-        df["Konum"] = df[loc_col].astype(str)
-    else:
-        df["Konum"] = ""
-
-    # de-dup and drop empty SN
-    df = df[df["SN"].str.len() > 0].drop_duplicates(subset=["SN"]).reset_index(drop=True)
-    return df[["SN", "İş Ortağı", "İl", "Konum"]]
-
-# =========================
-# Session State
-# =========================
-
-if "last_scan_at" not in st.session_state:
-    st.session_state.last_scan_at = None
-if "status_cache" not in st.session_state:
-    st.session_state.status_cache = {}  # SN -> dict(status,last_seen,checked_at,err)
-if "offline_list" not in st.session_state:
-    st.session_state.offline_list = pd.DataFrame(columns=["SN", "İş Ortağı", "İl", "Konum", "Durum", "LastSeen", "Hata", "KontrolZamanı"])
-
-# =========================
-# Sidebar Controls
-# =========================
-
-st.sidebar.header("Ayarlar")
-
-cfg = ThrottleConfig(
-    per_device_delay_sec=float(st.sidebar.slider("Cihaz başı gecikme (sn)", 0.0, 10.0, 2.5, 0.5)),
-    max_retries=int(st.sidebar.slider("Retry sayısı", 0, 6, 3, 1)),
-    base_backoff_sec=float(st.sidebar.slider("Backoff katsayısı", 1.0, 2.5, 1.2, 0.1)),
-    jitter_sec=float(st.sidebar.slider("Jitter (sn)", 0.0, 1.0, 0.35, 0.05)),
-    timeout_sec=float(st.sidebar.slider("HTTP timeout (sn)", 5.0, 60.0, 20.0, 1.0)),
-)
-
-lookback_hours = int(st.sidebar.selectbox("Online/Offline lookback (saat)", [12, 24, 48, 72, 96], index=3))
-st.sidebar.caption("Lookback büyüdükçe kısa süreli API hatalarında 'offline kaçırma' azalır.")
-
-st.sidebar.divider()
-st.sidebar.subheader("Kimlik Bilgileri")
-st.sidebar.write(f"GEODNET_CLIENT_ID: {'✅' if GEODNET_CLIENT_ID else '❌ (env)'}")
-st.sidebar.write(f"GEODNET_TOKEN: {'✅' if GEODNET_TOKEN else '❌ (env)'}")
-if not GEODNET_CLIENT_ID or not GEODNET_TOKEN:
-    st.sidebar.warning("Env değişkenleri eksik: GEODNET_CLIENT_ID ve GEODNET_TOKEN")
-
-# =========================
-# Input Area
-# =========================
-
-tab1, tab2 = st.tabs(["Offline Takip", "Token Hesaplama (opsiyonel)"])
-
-with tab1:
-    st.subheader("Online / Offline Cihaz Listesi (Sağlamlaştırılmış)")
-
-    colA, colB = st.columns([1.2, 1])
-
-    with colA:
-        uploaded = st.file_uploader("Excel yükle (SN + opsiyonel İş Ortağı / İl / Konum)", type=["xlsx", "xls"])
-        manual_sn_text = st.text_area("Veya manuel SN listesi (her satıra 1 SN)", height=120)
-
-    with colB:
-        st.markdown("**Kontrol**")
-        scan_btn = st.button("🔄 Online/Offline Taraması Yap", type="primary", use_container_width=True)
-        use_throttle = st.checkbox("Cihaz başı gecikme uygula", value=True)
-        clear_cache = st.button("🧹 Cache temizle", use_container_width=True)
-
-        if clear_cache:
-            st.session_state.status_cache = {}
-            st.session_state.offline_list = st.session_state.offline_list.iloc[0:0]
-            st.session_state.last_scan_at = None
-            st.success("Cache temizlendi.")
-
-    # Build device table
-    devices_df = pd.DataFrame(columns=["SN", "İş Ortağı", "İl", "Konum"])
-    if uploaded is not None:
+# -------------------------
+# API Calls
+# -------------------------
+def get_all_rewards(sn: str, payout_start: date, payout_end: date, client_id: str, token: str):
+    all_data = []
+    curr = payout_start
+    while curr <= payout_end:
+        curr_end = min(curr + timedelta(days=29), payout_end)
+        ts = str(int(time.time() * 1000))
+        params = {
+            "clientId": client_id,
+            "timeStamp": encrypt_param(ts, token),
+            "sn": encrypt_param(sn, token),
+            "minTime": encrypt_param(curr.strftime("%Y-%m-%d"), token),
+            "maxTime": encrypt_param(curr_end.strftime("%Y-%m-%d"), token),
+        }
         try:
-            devices_df = load_sn_table(uploaded)
-        except Exception as e:
-            st.error(f"Excel okunamadı: {e}")
+            r = HTTP.get(
+                "https://consoleresapi.geodnet.com/getRewardsTimeLine",
+                params=params,
+                verify=False,
+                timeout=15,
+            )
+            res = r.json()
+            if res.get("statusCode") == 200:
+                data = res.get("data", [])
+                if data:
+                    all_data.extend(data)
+        except Exception:
+            pass
+        curr = curr_end + timedelta(days=1)
+    return all_data
 
-    manual_sns = []
-    if manual_sn_text.strip():
-        manual_sns = [normalize_sn(x) for x in manual_sn_text.splitlines() if normalize_sn(x)]
-        if manual_sns:
-            md = pd.DataFrame({"SN": manual_sns, "İş Ortağı": "", "İl": "", "Konum": ""})
-            devices_df = pd.concat([devices_df, md], ignore_index=True)
 
-    devices_df = devices_df.drop_duplicates(subset=["SN"]).reset_index(drop=True)
+def _get_sn_info(sn: str, client_id: str, token: str, url: str):
+    """
+    Dokümana göre /getSnInfo:
+      clientId = plain text
+      timeStamp = encrypted (ms)
+      sn = encrypted
+    """
+    ts = str(int(time.time() * 1000))
+    params = {
+        "clientId": client_id,
+        "timeStamp": encrypt_param(ts, token),
+        "sn": encrypt_param(sn, token),
+    }
+    try:
+        r = HTTP.get(url, params=params, verify=False, timeout=15)
+        return r.json()
+    except Exception:
+        return {"statusCode": -1, "msg": "request_error", "data": {}}
 
-    if len(devices_df) == 0:
-        st.info("Tarama için Excel yükle veya manuel SN gir.")
-    else:
-        st.write(f"Toplam cihaz: **{len(devices_df)}**")
 
-    # Scan
-    if scan_btn and len(devices_df) > 0:
-        progress = st.progress(0, text="Tarama başlıyor...")
-        log_box = st.empty()
+def _extract_online_and_ts(sninfo_resp: dict):
+    """
+    getSnInfo response:
+      statusCode == 200 OK
+      data.online (1/0)
+      data.timestamp (latest update time)
+    """
+    status_code = None
+    msg = ""
+    data = {}
 
-        offline_rows = []
-        ok_count = 0
-        fail_count = 0
+    if isinstance(sninfo_resp, dict):
+        status_code = sninfo_resp.get("statusCode")
+        msg = str(sninfo_resp.get("msg", "") or "")
+        if isinstance(sninfo_resp.get("data"), dict):
+            data = sninfo_resp["data"]
 
-        for i, row in devices_df.iterrows():
-            sn = row["SN"]
-            progress.progress((i) / max(1, len(devices_df)), text=f"Kontrol ediliyor: {sn} ({i+1}/{len(devices_df)})")
+    online = None
+    if "online" in data:
+        try:
+            online = int(data.get("online"))
+        except Exception:
+            online = None
 
-            # ---- call status with retry/backoff
-            ok, status, err, last_seen = fetch_miner_status(sn, lookback_hours=lookback_hours, cfg=cfg)
-
-            checked_at = _to_iso_z(_now_utc())
-            st.session_state.status_cache[sn] = {
-                "status": status if ok else "unknown",
-                "last_seen": last_seen,
-                "checked_at": checked_at,
-                "err": err if not ok else "",
-            }
-
-            if ok:
-                ok_count += 1
+    ts_val = data.get("timestamp", "")
+    ts_str = ""
+    if ts_val:
+        try:
+            iv = int(ts_val)
+            if iv > 10_000_000_000:
+                ts_str = datetime.utcfromtimestamp(iv / 1000).strftime("%Y-%m-%d %H:%M:%S")
+            elif iv > 1_000_000_000:
+                ts_str = datetime.utcfromtimestamp(iv).strftime("%Y-%m-%d %H:%M:%S")
             else:
-                fail_count += 1
+                ts_str = str(ts_val)
+        except Exception:
+            ts_str = str(ts_val)
 
-            if status == "offline":
-                offline_rows.append({
-                    "SN": sn,
-                    "İş Ortağı": row.get("İş Ortağı", ""),
-                    "İl": row.get("İl", ""),
-                    "Konum": row.get("Konum", ""),
-                    "Durum": status,
-                    "LastSeen": last_seen or "",
-                    "Hata": "",
-                    "KontrolZamanı": checked_at
-                })
-            elif not ok:
-                # Keep unknowns as well, so you can see what was missed due to errors
-                offline_rows.append({
-                    "SN": sn,
-                    "İş Ortağı": row.get("İş Ortağı", ""),
-                    "İl": row.get("İl", ""),
-                    "Konum": row.get("Konum", ""),
-                    "Durum": "unknown",
-                    "LastSeen": last_seen or "",
-                    "Hata": err,
-                    "KontrolZamanı": checked_at
-                })
+    return status_code, msg, online, ts_str
 
-            log_box.caption(f"OK: {ok_count} | Fail: {fail_count} | Offline/Unknown listede: {len(offline_rows)}")
 
-            # ---- throttle between devices
-            if use_throttle and i < len(devices_df) - 1:
-                sleep_with_jitter(cfg.per_device_delay_sec, cfg.jitter_sec)
+def offline_check_getsninfo(device_df: pd.DataFrame, client_id: str, token: str, url: str):
+    """
+    Offline = online == 0
+    Ayrıca API hatası/limit durumlarını da görünür yap:
+      - statusCode != 200 => DURUM = ERROR / RATE_LIMIT
+      - online None => UNKNOWN
+    Bu satırları da listeleriz (operasyonel görünürlük için).
+    """
+    if device_df is None or device_df.empty:
+        return pd.DataFrame(columns=["SN", "Is_Ortagi", "Il", "Konum", "Durum", "Son_Guncelleme"])
 
-        progress.progress(1.0, text="Tarama bitti ✅")
-        st.session_state.last_scan_at = _to_iso_z(_now_utc())
+    rows = []
+    p = st.progress(0)
+    sns = device_df["SN"].astype(str).tolist()
+    n = max(1, len(sns))
 
-        st.session_state.offline_list = pd.DataFrame(offline_rows)
-        st.success(f"Tarama tamamlandı. OK={ok_count}, Fail={fail_count}, Offline/Unknown={len(offline_rows)}")
-
-    # Display results (no rescan)
-    st.divider()
-    meta_cols = st.columns([1, 1, 2])
-    meta_cols[0].metric("Son tarama", st.session_state.last_scan_at or "-")
-    meta_cols[1].metric("Cache kayıt sayısı", len(st.session_state.status_cache))
-    meta_cols[2].caption("‘Offline minerları listele’ görünümü tekrar tarama yapmaz; son tarama sonuçlarını gösterir.")
-
-    st.subheader("Offline / Unknown Cihazlar")
-    if st.session_state.offline_list is None or st.session_state.offline_list.empty:
-        st.info("Henüz sonuç yok. Tarama başlat.")
-    else:
-        # show offline first, then unknown
-        df_show = st.session_state.offline_list.copy()
-        df_show["__rank"] = df_show["Durum"].map({"offline": 0, "unknown": 1}).fillna(9)
-        df_show = df_show.sort_values(["__rank", "İş Ortağı", "İl", "SN"]).drop(columns=["__rank"])
-        st.dataframe(df_show, use_container_width=True, height=420)
-
-        # export
-        out_xlsx = df_show.copy()
-        st.download_button(
-            "⬇️ Offline/Unknown Excel indir",
-            data=out_xlsx.to_csv(index=False).encode("utf-8-sig"),
-            file_name="geod_offline_unknown.csv",
-            mime="text/csv",
-            use_container_width=True
+    def add_row(sn, meta, durum, ts_str):
+        rows.append(
+            {
+                "SN": str(sn),
+                "Is_Ortagi": meta.get("Is_Ortagi", ""),
+                "Il": meta.get("Il", ""),
+                "Konum": meta.get("Konum", ""),
+                "Durum": durum,
+                "Son_Guncelleme": ts_str,
+            }
         )
 
-with tab2:
-    st.subheader("Token Hesaplama (opsiyonel)")
-    st.caption("Bu bölüm dünkü uygulamada vardı; istersen aynı throttle/retry mantığıyla devam eder.")
+    for i, sn in enumerate(sns):
+        meta = device_df.loc[device_df["SN"].astype(str) == str(sn)].iloc[0].to_dict()
 
-    days = st.number_input("Hesaplama aralığı (gün)", min_value=1, max_value=365, value=30, step=1)
-    calc_btn = st.button("🧮 Seçili cihazlar için rewards hesapla", use_container_width=True)
+        resp = _get_sn_info(sn, client_id, token, url)
+        status_code, msg, online, ts_str = _extract_online_and_ts(resp)
 
-    if calc_btn:
-        # Use the same devices_df from above (Excel/manual)
-        if 'devices_df' not in locals() or devices_df is None or devices_df.empty:
-            st.warning("Önce Offline Takip sekmesinde Excel yükle veya manuel SN gir.")
+        # Rate-limit yakala: dokümanda 602 excessive request frequency var.
+        if status_code == 602 or "excessive" in msg.lower():
+            # kısa bekle + 1 retry
+            time.sleep(0.8)
+            resp2 = _get_sn_info(sn, client_id, token, url)
+            status_code, msg, online, ts_str = _extract_online_and_ts(resp2)
+
+        if status_code != 200:
+            # hata olanları da listeye alalım (kaçırmayalım)
+            durum = "RATE_LIMIT" if status_code == 602 else "ERROR"
+            add_row(sn, meta, durum, ts_str)
         else:
-            end_t = _now_utc()
-            start_t = end_t - dt.timedelta(days=int(days))
-            start_iso = _to_iso_z(start_t)
-            end_iso = _to_iso_z(end_t)
+            if online == 0:
+                add_row(sn, meta, "OFFLINE", ts_str)
+            elif online is None:
+                add_row(sn, meta, "UNKNOWN", ts_str)
+            # online==1 ise listeye alma
 
-            progress2 = st.progress(0, text="Rewards hesaplanıyor...")
-            rows = []
-            for i, row in devices_df.iterrows():
-                sn = row["SN"]
-                progress2.progress((i) / max(1, len(devices_df)), text=f"Rewards: {sn} ({i+1}/{len(devices_df)})")
-                ok, total, err = fetch_rewards_timeline(sn, start_iso, end_iso, cfg)
-                rows.append({
-                    "SN": sn,
-                    "İş Ortağı": row.get("İş Ortağı", ""),
-                    "İl": row.get("İl", ""),
-                    "Konum": row.get("Konum", ""),
-                    f"{days}g_GEOD": total if ok else 0.0,
-                    "Hata": "" if ok else err,
+        p.progress((i + 1) / n)
+
+        # ✅ İSTEDİĞİN ÖZELLİK: her cihaz sorgusundan sonra 2-3 sn bekle
+        # (son cihazdan sonra beklemiyoruz)
+        if i < len(sns) - 1:
+            time.sleep(2.5)
+
+    return pd.DataFrame(rows)
+
+
+# -------------------------
+# UI helpers (görsel aynı)
+# -------------------------
+def render_offline_banner(offline_count: int):
+    if offline_count <= 0:
+        return
+    html = f"""
+    <style>
+      .offline-banner {{
+        width: 100%;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: rgba(255, 0, 0, 0.18);
+        border: 1px solid rgba(255, 0, 0, 0.35);
+        color: #fff;
+        font-weight: 800;
+        letter-spacing: 0.3px;
+        margin: 8px 0 14px 0;
+        animation: blink 1.1s infinite;
+      }}
+      @keyframes blink {{
+        0%   {{ filter: brightness(1.0); }}
+        50%  {{ filter: brightness(1.8); }}
+        100% {{ filter: brightness(1.0); }}
+      }}
+      .offline-badge {{
+        display: inline-block;
+        padding: 4px 10px;
+        margin-left: 8px;
+        border-radius: 999px;
+        background: rgba(255,0,0,0.55);
+        border: 1px solid rgba(255,0,0,0.7);
+      }}
+    </style>
+    <div class="offline-banner">
+      ⚠️ OFFLINE / HATA DURUMU OLAN CİHAZLAR VAR
+      <span class="offline-badge">Adet: {offline_count}</span>
+      <span style="font-weight:600; opacity:0.9; margin-left:10px;">
+        (Aşağıdan listeyi görebilirsin)
+      </span>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# -------------------------
+# PDF / WP (aynı)
+# -------------------------
+def create_pdf(m_name, data_df, g_price, u_try, s_date):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("helvetica", "B", 14)
+    pdf.cell(190, 10, "MonsPro GEODNET HAKEDIS RAPORU", ln=True, align="C")
+    pdf.set_font("helvetica", "", 10)
+    pdf.ln(5)
+    pdf.cell(95, 8, f"Is Ortagi: {temizle(m_name)}")
+    pdf.cell(95, 8, f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y')}", ln=True, align="R")
+    pdf.cell(190, 8, f"Donem: {s_date}", ln=True)
+    pdf.cell(190, 8, f"GEOD Fiyat: ${g_price:.4f} | Kur: {u_try:.2f} TL", ln=True)
+    pdf.ln(5)
+
+    pdf.set_fill_color(240, 240, 240)
+    pdf.set_font("helvetica", "B", 7)
+    pdf.cell(30, 10, "Miner No", 1, 0, "C", True)
+    pdf.cell(20, 10, "Kazanc", 1, 0, "C", True)
+    pdf.cell(25, 10, "Durum", 1, 0, "C", True)
+    pdf.cell(25, 10, "Hakedis", 1, 0, "C", True)
+    pdf.cell(25, 10, "Eklenen", 1, 0, "C", True)
+    pdf.cell(30, 10, "Top.GEOD", 1, 0, "C", True)
+    pdf.cell(35, 10, "Tutar(TL)", 1, 1, "C", True)
+
+    pdf.set_font("helvetica", "", 7)
+    for _, row in data_df.iterrows():
+        pdf.cell(30, 10, str(row["SN"]), 1)
+        pdf.cell(20, 10, f"{row['Toplam_GEOD_Kazanc']:.2f}", 1)
+        pdf.cell(25, 10, temizle(row["Durum_Etiket"]), 1, 0, "C")
+        pdf.cell(25, 10, f"{row['Hakedis_Baz']:.2f}", 1)
+        pdf.cell(25, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
+        pdf.cell(30, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
+        pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, "C")
+
+    pdf.ln(5)
+    pdf.set_font("helvetica", "B", 10)
+    pdf.cell(190, 10, f"Genel Toplam: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align="R")
+    return bytes(pdf.output())
+
+def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
+    msg = f"*📄 MonsPro GEODNET Hakedis Raporu*\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"*👤 Is Ortagi:* {temizle(m_name)}\n"
+    msg += f"*📅 Donem:* {donem}\n"
+    msg += f"*💰 Anlik Kur:* 1 GEOD = ${kur_geod:.4f} ({kur_geod * kur_usd:.2f} TL)\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
+    for _, row in m_data.iterrows():
+        simge = "✅" if row["Durum_Etiket"] == "TAM KAZANC" else "🎁" if row["Durum_Etiket"] == "DESTEKLENDI" else "⚠️"
+        msg += f"{simge} *Miner:* {row['SN']}\n"
+        msg += f"   └ Kazanc: {row['Toplam_GEOD_Kazanc']:.2f} GEOD\n"
+        if row["EKLENEN_GEOD"] > 0:
+            msg += f"   └ Destek: +{row['EKLENEN_GEOD']:.2f} GEOD\n"
+        msg += f"   └ *Hakedis:* {row['Hakedis_TL']:.2f} TL\n\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"*💳 TOPLAM ODEME: {m_data['Hakedis_TL'].sum():.2f} TL*\n"
+    msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"🚀 *MonsPro Team*"
+    return msg
+
+
+# -------------------------
+# Session State
+# -------------------------
+if "arsiv" not in st.session_state:
+    st.session_state.arsiv = {}
+if "last_results" not in st.session_state:
+    st.session_state.last_results = None
+if "device_df" not in st.session_state:
+    st.session_state.device_df = None
+if "offline_results" not in st.session_state:
+    st.session_state.offline_results = None
+if "geod_p" not in st.session_state:
+    g_val, u_val = get_live_prices_cached()
+    st.session_state.geod_p = g_val
+    st.session_state.usd_t = u_val
+
+
+# -------------------------
+# Sidebar
+# -------------------------
+with st.sidebar:
+    st.markdown("<h1 style='color: #FF4B4B;'>🛰️ MonsPro</h1>", unsafe_allow_html=True)
+    menu = st.radio("Menü Seçimi", ["📊 Yeni Sorgu", "📚 Arşiv"])
+    st.divider()
+
+    secrets_ok = ("CLIENT_ID" in st.secrets) and ("TOKEN" in st.secrets)
+    if not secrets_ok:
+        st.error("st.secrets içinde CLIENT_ID ve TOKEN yok. .streamlit/secrets.toml ekle.")
+    else:
+        st.success("Credentials OK (st.secrets) ✅")
+
+    price_mode = st.toggle("Manuel Fiyat Girişi", value=False)
+    if price_mode:
+        st.session_state.geod_p = st.number_input("GEOD Fiyat ($)", value=st.session_state.geod_p, format="%.4f")
+    else:
+        g_val, u_val = get_live_prices_cached()
+        st.session_state.geod_p = g_val
+        st.session_state.usd_t = u_val
+
+    if menu == "📊 Yeni Sorgu":
+        st.session_state.setdefault("mode", "Ödül Hesapla")
+        mode = st.radio("Mod", ["Ödül Hesapla", "Offline Takibi"], index=0 if st.session_state.mode == "Ödül Hesapla" else 1)
+        st.session_state.mode = mode
+
+        target_tl = st.number_input("Tamamlanacak TL Tutarı", min_value=0, value=500, step=50)
+        low_threshold = st.number_input("Low üretim eşiği (GEOD)", min_value=0, value=LOW_PROD_THRESHOLD_DEFAULT, step=10)
+
+        input_type = st.radio("Yöntem", ["Excel Yükle", "Manuel SN"])
+        today = datetime.now()
+        start_date = st.date_input("Başlangıç Tarihi (Performans)", value=today.replace(day=1).date())
+        end_date = st.date_input("Bitiş Tarihi (Performans)", value=today.date())
+
+        st.caption(
+            f"Not: GEOD ödülleri TR {PAYOUT_CUTOFF_TR} civarı yatar. "
+            f"Ödül hesaplamada API sorgusu otomatik +1 gün kaydırılır."
+        )
+
+        if input_type == "Excel Yükle":
+            uploaded_file = st.file_uploader("Excel Yukle", type=["xlsx"])
+        else:
+            m_manual = st.text_input("Is Ortagi Adi", "Ozel Sorgu")
+            sn_manual = st.text_input("Miner Numarasi (SN)")
+            kp_manual = st.number_input("Kar Payi Orani (%)", min_value=1, max_value=100, value=25)
+            tel_manual = st.text_input("Telefon", "")
+
+        kayit_adi = st.text_input("Arsiv Ismi", value=today.strftime("%d.%m.%Y %H:%M"))
+
+        if st.button("HESAPLA", type="primary", use_container_width=True):
+            if not secrets_ok:
+                st.error("Secrets eksik (CLIENT_ID/TOKEN).")
+                st.stop()
+            if start_date > end_date:
+                st.error("Başlangıç tarihi bitişten büyük olamaz.")
+                st.stop()
+
+            source_df = None
+            device_df = None
+
+            if input_type == "Excel Yükle" and uploaded_file:
+                df_raw = pd.read_excel(uploaded_file, dtype={"Telefon": str, "Miner Numarası": str, "SN": str})
+                col_partner = _pick_col(df_raw, ["İş Ortağı", "Is Ortagi", "Musteri", "Partner"])
+                col_sn = _pick_col(df_raw, ["Miner Numarası", "Miner Numarasi", "SN", "Serial", "Seri No"])
+                col_kp = _pick_col(df_raw, ["Kar Payı", "Kar Payi", "KP", "Kar_Payi"])
+                col_tel = _pick_col(df_raw, ["Telefon", "Tel", "Phone"])
+
+                if col_partner is None or col_sn is None or col_kp is None:
+                    st.error("Excel içinde İş Ortağı / SN / Kar Payı kolonları bulunamadı.")
+                    st.stop()
+
+                col_il = _pick_col(df_raw, ["İl", "Il", "Sehir", "City"])
+                col_konum = _pick_col(df_raw, ["Konum", "Lokasyon", "Location", "Adres", "Address"])
+
+                source_df = pd.DataFrame({
+                    "Musteri": df_raw[col_partner],
+                    "SN": df_raw[col_sn].astype(str).str.strip(),
+                    "Kar_Payi": df_raw[col_kp],
+                    "Telefon": df_raw[col_tel] if col_tel else None,
                 })
 
-                if use_throttle and i < len(devices_df) - 1:
-                    sleep_with_jitter(cfg.per_device_delay_sec, cfg.jitter_sec)
+                device_df = pd.DataFrame({
+                    "SN": df_raw[col_sn].astype(str).str.strip(),
+                    "Is_Ortagi": df_raw[col_partner].astype(str),
+                    "Il": df_raw[col_il].astype(str) if col_il else "",
+                    "Konum": df_raw[col_konum].astype(str) if col_konum else "",
+                })
 
-            progress2.progress(1.0, text="Bitti ✅")
-            df_rewards = pd.DataFrame(rows)
-            st.dataframe(df_rewards, use_container_width=True, height=420)
-            st.download_button(
-                "⬇️ Rewards CSV indir",
-                data=df_rewards.to_csv(index=False).encode("utf-8-sig"),
-                file_name=f"geod_rewards_{days}d.csv",
-                mime="text/csv",
+            elif input_type == "Manuel SN" and sn_manual:
+                source_df = pd.DataFrame([{
+                    "Musteri": m_manual,
+                    "SN": str(sn_manual).strip(),
+                    "Kar_Payi": kp_manual / 100,
+                    "Telefon": tel_manual,
+                }])
+
+                device_df = pd.DataFrame([{
+                    "SN": str(sn_manual).strip(),
+                    "Is_Ortagi": str(m_manual),
+                    "Il": "",
+                    "Konum": "",
+                }])
+
+            if source_df is None or source_df.empty:
+                st.warning("Kaynak veri yok.")
+                st.stop()
+
+            st.session_state.device_df = device_df
+
+            client_id = st.secrets["CLIENT_ID"]
+            token = st.secrets["TOKEN"]
+
+            payout_start = start_date + timedelta(days=1)
+            payout_end = end_date + timedelta(days=1)
+
+            geod_tl_rate = st.session_state.geod_p * st.session_state.usd_t
+            thr = float(low_threshold)
+            tgt = float(target_tl)
+
+            results = []
+            daily_sum = {}
+
+            p_bar = st.progress(0)
+            n = len(source_df)
+
+            for idx, row in source_df.iterrows():
+                m_name = str(row["Musteri"]).strip()
+                sn_no = str(row["SN"]).strip()
+                tel = normalize_phone(row.get("Telefon"))
+                kp_raw = safe_float(row["Kar_Payi"], 0.0)
+                kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
+
+                raw_data = get_all_rewards(sn_no, payout_start, payout_end, client_id, token)
+
+                total_token = 0.0
+                for d in raw_data:
+                    rw = safe_float(d.get("reward", 0), 0.0)
+                    total_token += rw
+                    payout_day = parse_reward_date(d)
+                    if payout_day:
+                        perf_day = payout_day - timedelta(days=1)
+                        if start_date <= perf_day <= end_date:
+                            daily_sum[perf_day] = daily_sum.get(perf_day, 0.0) + rw
+
+                mevcut_pay_token = total_token * kp_rate
+                mevcut_tl = mevcut_pay_token * geod_tl_rate
+
+                eklenen_geod = 0.0
+                if total_token < thr:
+                    geod_hakedis = mevcut_pay_token
+                    durum_etiket = "AZ URETIM"
+                else:
+                    if mevcut_tl < tgt:
+                        eksik_tl = tgt - mevcut_tl
+                        eklenen_geod = eksik_tl / geod_tl_rate if geod_tl_rate > 0 else 0.0
+                        geod_hakedis = mevcut_pay_token + eklenen_geod
+                        durum_etiket = "DESTEKLENDI"
+                    else:
+                        geod_hakedis = mevcut_pay_token
+                        durum_etiket = "TAM KAZANC"
+
+                results.append({
+                    "Is_Ortagi": m_name,
+                    "SN": sn_no,
+                    "Telefon": tel,
+                    "Toplam_GEOD_Kazanc": total_token,
+                    "Hakedis_Baz": mevcut_pay_token,
+                    "EKLENEN_GEOD": eklenen_geod,
+                    "GEOD_HAKEDIS": geod_hakedis,
+                    "Hakedis_TL": geod_hakedis * geod_tl_rate,
+                    "MONSPRO_KAZANC": total_token - geod_hakedis,
+                    "Durum_Etiket": durum_etiket
+                })
+
+                p_bar.progress((idx + 1) / n)
+
+            df_res = pd.DataFrame(results)
+            daily = (
+                pd.DataFrame([{"Performance_Day": k, "GEOD": v} for k, v in daily_sum.items()])
+                .sort_values("Performance_Day") if daily_sum else
+                pd.DataFrame(columns=["Performance_Day", "GEOD"])
+            )
+
+            st.session_state.last_results = {
+                "df": df_res,
+                "donem": f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}",
+                "ay": start_date.strftime("%B %Y"),
+                "kur_geod": st.session_state.geod_p,
+                "kur_usd": st.session_state.usd_t,
+                "target": target_tl,
+                "low_threshold": thr,
+                "daily": daily,
+            }
+
+            if kayit_adi:
+                st.session_state.arsiv[kayit_adi] = st.session_state.last_results
+
+
+# -------------------------
+# Main UI
+# -------------------------
+st.divider()
+c1, c2, c3 = st.columns(3)
+geod_try_val = st.session_state.geod_p * st.session_state.usd_t
+c1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
+c2.metric("USD / TRY", f"{st.session_state.usd_t:.2f} TL")
+c3.metric("GEOD / TRY", f"{geod_try_val:.2f} TL")
+
+if menu == "📊 Yeni Sorgu":
+    mode = st.session_state.get("mode", "Ödül Hesapla")
+
+    # ---- OFFLINE TAKİBİ MODU ----
+    if mode == "Offline Takibi":
+        st.divider()
+        st.subheader("🛑 Offline Takibi (getSnInfo)")
+
+        if st.session_state.device_df is None or st.session_state.device_df.empty:
+            st.info("Önce Excel/Manuel listeyi girip HESAPLA yap (listeyi oluşturmak için).")
+        else:
+            get_sn_info_url = st.secrets.get("GET_SN_INFO_URL", "https://consoleresapi.geodnet.com/getSnInfo").strip()
+
+            auto_ok = False
+            try:
+                from streamlit_autorefresh import st_autorefresh
+                st_autorefresh(interval=30 * 60 * 1000, key="offline_autorefresh_30m")
+                auto_ok = True
+            except Exception:
+                auto_ok = False
+
+            colA, colB, colC = st.columns([1, 1, 2])
+            do_check = colA.button("OFFLINE CHECK", type="primary", use_container_width=True)
+            manual_refresh = colB.button("Yenile", use_container_width=True)
+            if not auto_ok:
+                colC.warning("30 dk otomatik yenileme (opsiyonel): `pip install streamlit-autorefresh`")
+
+            if do_check or manual_refresh or (st.session_state.offline_results is None):
+                if ("CLIENT_ID" not in st.secrets) or ("TOKEN" not in st.secrets):
+                    st.error("Secrets eksik (CLIENT_ID/TOKEN).")
+                else:
+                    with st.spinner("Offline kontrol ediliyor..."):
+                        off_df = offline_check_getsninfo(
+                            st.session_state.device_df,
+                            st.secrets["CLIENT_ID"],
+                            st.secrets["TOKEN"],
+                            get_sn_info_url
+                        )
+                    st.session_state.offline_results = {
+                        "df": off_df,
+                        "checked_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+                    }
+
+            if st.session_state.offline_results:
+                off_df = st.session_state.offline_results["df"]
+                checked_at = st.session_state.offline_results["checked_at"]
+                st.caption(f"Son kontrol: **{checked_at}**")
+
+                render_offline_banner(len(off_df))
+                if off_df.empty:
+                    st.success("Offline/ERROR/UNKNOWN cihaz yok 🎉")
+                else:
+                    st.dataframe(
+                        off_df[["SN", "Is_Ortagi", "Il", "Konum", "Durum", "Son_Guncelleme"]],
+                        use_container_width=True,
+                        height=380
+                    )
+
+    # ---- ÖDÜL HESAPLAMA MODU ----
+    else:
+        if st.session_state.last_results:
+            st.divider()
+            res = st.session_state.last_results
+            df = res["df"]
+            daily = res.get("daily", pd.DataFrame(columns=["Performance_Day", "GEOD"]))
+
+            st.subheader("📊 Dönem Finansal Özeti")
+            col_a, col_b, col_c, col_d = st.columns(4)
+            with col_a:
+                st.info(f"📅 **Hesap Dönemi (Performans):**\n\n{res['donem']}")
+            with col_b:
+                st.success(f"🛰️ **Total GEOD Kazancı:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
+            with col_c:
+                st.warning(f"💸 **Total İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
+            with col_d:
+                st.error(f"📈 **Monspor Net GEOD Kazancı:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
+
+            st.divider()
+            st.subheader("📈 Günlük GEOD Üretim Trendi (Performans Günleri)")
+            if daily.empty:
+                st.info("Trend verisi üretilemedi (API response içinde tarih alanı bulunamadı olabilir).")
+            else:
+                d2 = daily.copy()
+                d2["Performance_Day"] = pd.to_datetime(d2["Performance_Day"])
+                d2 = d2.set_index("Performance_Day")
+                st.line_chart(d2["GEOD"], height=260)
+
+            st.divider()
+            st.header(f"📋 Hakediş Detayları (Hedef: {res['target']} TL)")
+
+            def style_rows(row):
+                if row.Toplam_GEOD_Kazanc < res["low_threshold"]:
+                    return ["background-color: #ffffcc; color: #000080; font-weight: bold"] * len(row)
+                return [""] * len(row)
+
+            st.dataframe(
+                df.style.apply(style_rows, axis=1).format({
+                    "Hakedis_TL": "{:.2f} TL",
+                    "Toplam_GEOD_Kazanc": "{:.2f}",
+                    "Hakedis_Baz": "{:.2f}",
+                    "EKLENEN_GEOD": "{:.2f}",
+                    "GEOD_HAKEDIS": "{:.2f}",
+                    "MONSPRO_KAZANC": "{:.2f}",
+                }),
                 use_container_width=True
             )
 
-st.divider()
-st.caption("Not: Offline kaçırma genelde geçici HTTP hataları + rate limit + dar zaman penceresi kombinasyonundan olur. Bu patch üçüne birden çözüm getirir.")
+            st.subheader("📲 Rapor Gönderim ve İndirme")
+            for i, m_name in enumerate(df["Is_Ortagi"].unique()):
+                m_data = df[df["Is_Ortagi"] == m_name]
+                tel = str(m_data["Telefon"].iloc[0])
+
+                col_m, col_p, col_w = st.columns([3, 1, 1])
+                col_m.write(f"👤 **{m_name}**")
+
+                pdf_bytes = create_pdf(m_name, m_data, res["kur_geod"], res["kur_usd"], res["donem"])
+                col_p.download_button("📂 PDF İndir", data=pdf_bytes, file_name=f"{temizle(m_name)}_Hakedis.pdf", key=f"dl_{i}")
+
+                if tel and tel not in ["nan", "None", "", "90"]:
+                    msg_text = wp_mesaj_olustur(m_name, m_data, res["donem"], res["kur_geod"], res["kur_usd"])
+                    wp_url = f"https://wa.me/{tel}?text={urllib.parse.quote(msg_text)}"
+                    col_w.markdown(
+                        f'<a href="{wp_url}" target="_blank" style="text-decoration: none;">'
+                        f'<button style="background-color: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; width: 100%;">'
+                        f'💬 WP Gönder</button></a>',
+                        unsafe_allow_html=True
+                    )
+                else:
+                    col_w.markdown(
+                        '<button disabled style="background-color: #FF4B4B; color: white; border: none; padding: 8px 15px; border-radius: 5px; width: 100%; cursor: not-allowed; opacity: 1;">Telefon No Yok</button>',
+                        unsafe_allow_html=True
+                    )
+        else:
+            st.info("Henüz sonuç yok. Sidebar’dan listeyi girip HESAPLA’ya bas.")
+
+else:
+    st.header("📚 Arşiv")
+    if not st.session_state.arsiv:
+        st.info("Arşiv boş.")
+    else:
+        keys = list(st.session_state.arsiv.keys())[::-1]
+        pick = st.selectbox("Kayıt seç", keys)
+        if pick:
+            st.session_state.last_results = st.session_state.arsiv[pick]
+            st.success("Arşiv kaydı yüklendi. Sol menüden Yeni Sorgu → Mod seçebilirsin.")
