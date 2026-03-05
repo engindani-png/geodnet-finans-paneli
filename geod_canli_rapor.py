@@ -305,15 +305,13 @@ def render_offline_banner(offline_count: int):
 
 
 # -------------------------
-# PDF / WP (UI aynen, PDF’e İl/Konum eklendi)
+# PDF / WP (UI aynı, PDF’e İl/Konum + TOPLAM GEOD/TL eklendi)
 # -------------------------
 def create_pdf(m_name, data_df, g_price, u_try, s_date, device_df=None):
     """
-    PDF görselini bozmadan, her Miner satırının altına:
-      Il: ... | Konum: ...
-    satırını ekler.
-
-    device_df: st.session_state.device_df (SN, Is_Ortagi, Il, Konum)
+    PDF görselini bozmadan:
+      - Her Miner satırının altına: Il | Konum
+      - PDF en altına (multi-device dahil): TOPLAM ÖDENECEK GEOD ve TOPLAM TL
     """
     # SN -> (Il, Konum) map
     loc_map = {}
@@ -364,15 +362,21 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date, device_df=None):
         pdf.cell(30, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
         pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, "C")
 
-        # ✅ İl + Konum satırı (görünümü bozmadan, ek satır)
+        # İl + Konum satırı
         il, konum = loc_map.get(sn, ("", ""))
         pdf.set_font("helvetica", "", 6)
         pdf.cell(190, 6, f"Il: {temizle(il)} | Konum: {temizle(konum)}", 1, 1)
         pdf.set_font("helvetica", "", 7)
 
-    pdf.ln(5)
+    # ✅ TOPLAM ÖDENECEK GEOD + TL (özellikle birden fazla cihaz varsa)
+    toplam_geod = safe_float(data_df["GEOD_HAKEDIS"].sum(), 0.0) if "GEOD_HAKEDIS" in data_df.columns else 0.0
+    toplam_tl = safe_float(data_df["Hakedis_TL"].sum(), 0.0) if "Hakedis_TL" in data_df.columns else 0.0
+
+    pdf.ln(4)
     pdf.set_font("helvetica", "B", 10)
-    pdf.cell(190, 10, f"Genel Toplam: {data_df['Hakedis_TL'].sum():.2f} TL", ln=True, align="R")
+    pdf.cell(190, 8, f"Toplam Odenecek GEOD: {toplam_geod:.2f} GEOD", ln=True, align="R")
+    pdf.cell(190, 8, f"Genel Toplam: {toplam_tl:.2f} TL", ln=True, align="R")
+
     return bytes(pdf.output())
 
 def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
@@ -389,9 +393,20 @@ def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
         if row["EKLENEN_GEOD"] > 0:
             msg += f"   └ Destek: +{row['EKLENEN_GEOD']:.2f} GEOD\n"
         msg += f"   └ *Hakedis:* {row['Hakedis_TL']:.2f} TL\n\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"*💳 TOPLAM ODEME: {m_data['Hakedis_TL'].sum():.2f} TL*\n"
-    msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
+
+    # ✅ WhatsApp mesajına da toplamlar (isteğe bağlı ama faydalı)
+    try:
+        toplam_geod = safe_float(m_data["GEOD_HAKEDIS"].sum(), 0.0)
+        toplam_tl = safe_float(m_data["Hakedis_TL"].sum(), 0.0)
+        msg += f"━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"*💳 TOPLAM ODEME: {toplam_tl:.2f} TL*\n"
+        msg += f"*🧾 TOPLAM GEOD: {toplam_geod:.2f} GEOD*\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
+    except Exception:
+        msg += f"━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"*💳 TOPLAM ODEME: {m_data['Hakedis_TL'].sum():.2f} TL*\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
+
     msg += f"🚀 *MonsPro Team*"
     return msg
 
@@ -737,7 +752,7 @@ if menu == "📊 Yeni Sorgu":
                 col_m, col_p, col_w = st.columns([3, 1, 1])
                 col_m.write(f"👤 **{m_name}**")
 
-                # ✅ PDF’e İl/Konum ekleyen çağrı (UI aynı)
+                # ✅ PDF: İl/Konum + Toplam GEOD/TL
                 pdf_bytes = create_pdf(
                     m_name,
                     m_data,
