@@ -18,6 +18,7 @@ st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
 PAYOUT_CUTOFF_TR = "08:30"
 LOW_PROD_THRESHOLD_DEFAULT = 180
+DAILY_NORMAL_GEOD = 12  # Günlük normal kazanç limiti (üstü Power Mining)
 
 HTTP = requests.Session()
 
@@ -434,26 +435,32 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date, device_df=None):
     pdf.ln(5)
 
     pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("helvetica", "B", 7)
-    pdf.cell(30, 10, "Miner No", 1, 0, "C", True)
-    pdf.cell(20, 10, "Kazanc", 1, 0, "C", True)
-    pdf.cell(25, 10, "Durum", 1, 0, "C", True)
-    pdf.cell(25, 10, "Hakedis", 1, 0, "C", True)
-    pdf.cell(25, 10, "Eklenen", 1, 0, "C", True)
-    pdf.cell(30, 10, "Top.GEOD", 1, 0, "C", True)
-    pdf.cell(35, 10, "Tutar(TL)", 1, 1, "C", True)
+    pdf.set_font("helvetica", "B", 6)
+    pdf.cell(24, 10, "Miner No", 1, 0, "C", True)
+    pdf.cell(20, 10, "Top.Kazanc", 1, 0, "C", True)
+    pdf.cell(20, 10, "PowerMin", 1, 0, "C", True)
+    pdf.cell(20, 10, "Hesaba Kat.", 1, 0, "C", True)
+    pdf.cell(20, 10, "Durum", 1, 0, "C", True)
+    pdf.cell(20, 10, "Hakedis", 1, 0, "C", True)
+    pdf.cell(18, 10, "Eklenen", 1, 0, "C", True)
+    pdf.cell(20, 10, "Top.GEOD", 1, 0, "C", True)
+    pdf.cell(28, 10, "Tutar(TL)", 1, 1, "C", True)
 
-    pdf.set_font("helvetica", "", 7)
+    pdf.set_font("helvetica", "", 6)
     for _, row in data_df.iterrows():
         sn = str(row["SN"]).strip()
+        pm = safe_float(row.get("Power_Mining", 0), 0.0)
+        hk = safe_float(row.get("Hesaba_Katilan", row.get("Toplam_GEOD_Kazanc", 0)), 0.0)
 
-        pdf.cell(30, 10, sn, 1)
+        pdf.cell(24, 10, sn, 1)
         pdf.cell(20, 10, f"{row['Toplam_GEOD_Kazanc']:.2f}", 1)
-        pdf.cell(25, 10, temizle(row["Durum_Etiket"]), 1, 0, "C")
-        pdf.cell(25, 10, f"{row['Hakedis_Baz']:.2f}", 1)
-        pdf.cell(25, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
-        pdf.cell(30, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
-        pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, "C")
+        pdf.cell(20, 10, f"{pm:.2f}", 1)
+        pdf.cell(20, 10, f"{hk:.2f}", 1)
+        pdf.cell(20, 10, temizle(row["Durum_Etiket"]), 1, 0, "C")
+        pdf.cell(20, 10, f"{row['Hakedis_Baz']:.2f}", 1)
+        pdf.cell(18, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
+        pdf.cell(20, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
+        pdf.cell(28, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, "C")
 
         # İl + Konum satırı
         il, konum = loc_map.get(sn, ("", ""))
@@ -482,7 +489,12 @@ def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
     for _, row in m_data.iterrows():
         simge = "✅" if row["Durum_Etiket"] == "TAM KAZANC" else "🎁" if row["Durum_Etiket"] == "DESTEKLENDI" else "⚠️"
         msg += f"{simge} *Miner:* {row['SN']}\n"
-        msg += f"   └ Kazanc: {row['Toplam_GEOD_Kazanc']:.2f} GEOD\n"
+        msg += f"   └ Toplam: {row['Toplam_GEOD_Kazanc']:.2f} GEOD\n"
+        pm = safe_float(row.get("Power_Mining", 0), 0.0)
+        hk = safe_float(row.get("Hesaba_Katilan", row.get("Toplam_GEOD_Kazanc", 0)), 0.0)
+        if pm > 0:
+            msg += f"   └ Power Mining: {pm:.2f} GEOD\n"
+            msg += f"   └ Hesaba Katilan: {hk:.2f} GEOD\n"
         if row["EKLENEN_GEOD"] > 0:
             msg += f"   └ Destek: +{row['EKLENEN_GEOD']:.2f} GEOD\n"
         msg += f"   └ *Hakedis:* {row['Hakedis_TL']:.2f} TL\n\n"
@@ -653,6 +665,7 @@ with st.sidebar:
             st.session_state.device_df = device_df
 
             # Hesaplamayı başlat - parametreleri session_state'e kaydet
+            gun_sayisi = (end_date - start_date).days + 1
             calc_params = {
                 "payout_start": start_date + timedelta(days=1),
                 "payout_end": end_date + timedelta(days=1),
@@ -665,6 +678,8 @@ with st.sidebar:
                 "end_date": end_date,
                 "target_tl": target_tl,
                 "kayit_adi": kayit_adi,
+                "gun_sayisi": gun_sayisi,
+                "max_normal_geod": gun_sayisi * DAILY_NORMAL_GEOD,
             }
             st.session_state.calc_in_progress = True
             st.session_state.calc_source_df = source_df
@@ -714,14 +729,17 @@ if st.session_state.calc_in_progress and st.session_state.calc_source_df is not 
         partial_df = pd.DataFrame(st.session_state.calc_results)
         st.subheader(f"📊 Canlı Sonuçlar ({len(partial_df)}/{n} cihaz)")
 
-        col_a, col_b, col_c = st.columns(3)
+        col_a, col_b, col_c, col_d = st.columns(4)
         col_a.metric("Tamamlanan", f"{len(partial_df)} / {n}")
         col_b.metric("Toplam GEOD", f"{partial_df['Toplam_GEOD_Kazanc'].sum():.2f}")
-        col_c.metric("Toplam TL", f"{partial_df['Hakedis_TL'].sum():.2f} TL")
+        col_c.metric("Power Mining", f"{partial_df['Power_Mining'].sum():.2f}")
+        col_d.metric("Toplam TL", f"{partial_df['Hakedis_TL'].sum():.2f} TL")
 
         st.dataframe(
-            partial_df[["Is_Ortagi", "SN", "Toplam_GEOD_Kazanc", "Durum_Etiket", "GEOD_HAKEDIS", "Hakedis_TL"]].style.format({
+            partial_df[["Is_Ortagi", "SN", "Toplam_GEOD_Kazanc", "Power_Mining", "Hesaba_Katilan", "Durum_Etiket", "GEOD_HAKEDIS", "Hakedis_TL"]].style.format({
                 "Toplam_GEOD_Kazanc": "{:.2f}",
+                "Power_Mining": "{:.2f}",
+                "Hesaba_Katilan": "{:.2f}",
                 "GEOD_HAKEDIS": "{:.2f}",
                 "Hakedis_TL": "{:.2f} TL",
             }),
@@ -767,12 +785,17 @@ if st.session_state.calc_in_progress and st.session_state.calc_source_df is not 
             geod_tl_rate = params["geod_tl_rate"]
             thr = params["thr"]
             tgt = params["tgt"]
+            max_normal = params.get("max_normal_geod", total_token)
 
-            mevcut_pay_token = total_token * kp_rate
+            # Power Mining ayrımı: maks normal üstü şirkete kalır
+            hesaba_katilan = min(total_token, max_normal)
+            power_mining = max(0.0, total_token - max_normal)
+
+            mevcut_pay_token = hesaba_katilan * kp_rate
             mevcut_tl = mevcut_pay_token * geod_tl_rate
 
             eklenen_geod = 0.0
-            if total_token < thr:
+            if hesaba_katilan < thr:
                 geod_hakedis = mevcut_pay_token
                 durum_etiket = "AZ URETIM"
             else:
@@ -790,11 +813,13 @@ if st.session_state.calc_in_progress and st.session_state.calc_source_df is not 
                 "SN": sn_no,
                 "Telefon": tel,
                 "Toplam_GEOD_Kazanc": total_token,
+                "Power_Mining": power_mining,
+                "Hesaba_Katilan": hesaba_katilan,
                 "Hakedis_Baz": mevcut_pay_token,
                 "EKLENEN_GEOD": eklenen_geod,
                 "GEOD_HAKEDIS": geod_hakedis,
                 "Hakedis_TL": geod_hakedis * geod_tl_rate,
-                "MONSPRO_KAZANC": total_token - geod_hakedis,
+                "MONSPRO_KAZANC": hesaba_katilan - geod_hakedis + power_mining,
                 "Durum_Etiket": durum_etiket
             })
 
@@ -918,15 +943,18 @@ if menu == "📊 Yeni Sorgu":
             daily = res.get("daily", pd.DataFrame(columns=["Performance_Day", "GEOD"]))
 
             st.subheader("📊 Dönem Finansal Özeti")
-            col_a, col_b, col_c, col_d = st.columns(4)
+            col_a, col_b, col_c, col_d, col_e = st.columns(5)
             with col_a:
-                st.info(f"📅 **Hesap Dönemi (Performans):**\n\n{res['donem']}")
+                st.info(f"📅 **Hesap Dönemi:**\n\n{res['donem']}")
             with col_b:
-                st.success(f"🛰️ **Total GEOD Kazancı:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
+                st.success(f"🛰️ **Total GEOD:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
             with col_c:
-                st.warning(f"💸 **Total İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
+                pm_total = df['Power_Mining'].sum() if 'Power_Mining' in df.columns else 0.0
+                st.metric("⚡ Power Mining", f"{pm_total:.2f} GEOD")
             with col_d:
-                st.error(f"📈 **Monspor Net GEOD Kazancı:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
+                st.warning(f"💸 **İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
+            with col_e:
+                st.error(f"📈 **MonsPro Net:**\n\n{df['MONSPRO_KAZANC'].sum():.2f}")
 
             st.divider()
             st.subheader("📈 Günlük GEOD Üretim Trendi (Performans Günleri)")
@@ -942,19 +970,29 @@ if menu == "📊 Yeni Sorgu":
             st.header(f"📋 Hakediş Detayları (Hedef: {res['target']} TL)")
 
             def style_rows(row):
-                if row.Toplam_GEOD_Kazanc < res["low_threshold"]:
+                if row.Hesaba_Katilan < res["low_threshold"]:
                     return ["background-color: #ffffcc; color: #000080; font-weight: bold"] * len(row)
                 return [""] * len(row)
 
+            display_cols = ["Is_Ortagi", "SN", "Toplam_GEOD_Kazanc", "Power_Mining", "Hesaba_Katilan",
+                            "Durum_Etiket", "Hakedis_Baz", "EKLENEN_GEOD", "GEOD_HAKEDIS", "Hakedis_TL", "MONSPRO_KAZANC"]
+            # Sadece mevcut kolonları göster (eski checkpoint uyumluluğu)
+            display_cols = [c for c in display_cols if c in df.columns]
+
+            fmt = {
+                "Hakedis_TL": "{:.2f} TL",
+                "Toplam_GEOD_Kazanc": "{:.2f}",
+                "Power_Mining": "{:.2f}",
+                "Hesaba_Katilan": "{:.2f}",
+                "Hakedis_Baz": "{:.2f}",
+                "EKLENEN_GEOD": "{:.2f}",
+                "GEOD_HAKEDIS": "{:.2f}",
+                "MONSPRO_KAZANC": "{:.2f}",
+            }
+            fmt = {k: v for k, v in fmt.items() if k in df.columns}
+
             st.dataframe(
-                df.style.apply(style_rows, axis=1).format({
-                    "Hakedis_TL": "{:.2f} TL",
-                    "Toplam_GEOD_Kazanc": "{:.2f}",
-                    "Hakedis_Baz": "{:.2f}",
-                    "EKLENEN_GEOD": "{:.2f}",
-                    "GEOD_HAKEDIS": "{:.2f}",
-                    "MONSPRO_KAZANC": "{:.2f}",
-                }),
+                df[display_cols].style.apply(style_rows, axis=1).format(fmt),
                 use_container_width=True
             )
 
