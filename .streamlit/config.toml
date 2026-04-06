@@ -1,0 +1,11 @@
+[server]
+headless = true
+maxUploadSize = 300
+enableXsrfProtection = false
+maxMessageSize = 300
+
+[runner]
+fastReruns = true
+
+[browser]
+gatherUsageStats = false

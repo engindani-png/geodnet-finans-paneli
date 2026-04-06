@@ -4,6 +4,9 @@ import time
 import binascii
 import pandas as pd
 import urllib.parse
+import json
+import os
+import tempfile
 from datetime import datetime, timedelta, date
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -101,6 +104,79 @@ def parse_reward_date(item: dict):
             except Exception:
                 pass
     return None
+
+
+# -------------------------
+# Checkpoint (dosya tabanlı, app restart'a dayanıklı)
+# -------------------------
+CHECKPOINT_DIR = os.path.join(tempfile.gettempdir(), "geodnet_calc")
+CHECKPOINT_FILE = os.path.join(CHECKPOINT_DIR, "checkpoint.json")
+
+def _ensure_cp_dir():
+    os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
+def _date_serializer(obj):
+    if isinstance(obj, date):
+        return {"__date__": obj.isoformat()}
+    raise TypeError(f"Not serializable: {type(obj)}")
+
+def _date_deserializer(obj):
+    if "__date__" in obj:
+        return date.fromisoformat(obj["__date__"])
+    return obj
+
+def save_checkpoint(calc_index, calc_results, calc_daily_sum, calc_params, source_records):
+    """Hesaplama ilerlemesini dosyaya yaz."""
+    _ensure_cp_dir()
+    # daily_sum key'leri date objesi, stringe çevir
+    ds_ser = {k.isoformat() if isinstance(k, date) else str(k): v for k, v in calc_daily_sum.items()}
+    # params içindeki date objeleri
+    params_ser = {}
+    for k, v in calc_params.items():
+        if isinstance(v, date):
+            params_ser[k] = {"__date__": v.isoformat()}
+        else:
+            params_ser[k] = v
+    data = {
+        "calc_index": calc_index,
+        "calc_results": calc_results,
+        "calc_daily_sum": ds_ser,
+        "calc_params": params_ser,
+        "source_records": source_records,
+        "updated_at": datetime.now().isoformat(),
+    }
+    with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, default=_date_serializer)
+
+def load_checkpoint():
+    """Checkpoint varsa yükle, yoksa None döndür."""
+    if not os.path.exists(CHECKPOINT_FILE):
+        return None
+    try:
+        with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # daily_sum key'lerini date'e çevir
+        ds = {}
+        for k, v in data.get("calc_daily_sum", {}).items():
+            try:
+                ds[date.fromisoformat(k)] = v
+            except Exception:
+                ds[k] = v
+        data["calc_daily_sum"] = ds
+        # params içindeki date objelerini geri çevir
+        params = data.get("calc_params", {})
+        for k, v in params.items():
+            if isinstance(v, dict) and "__date__" in v:
+                params[k] = date.fromisoformat(v["__date__"])
+        data["calc_params"] = params
+        return data
+    except Exception:
+        return None
+
+def clear_checkpoint():
+    """Checkpoint dosyasını sil."""
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
 
 
 # -------------------------
@@ -444,18 +520,25 @@ if "geod_p" not in st.session_state:
     st.session_state.geod_p = g_val
     st.session_state.usd_t = u_val
 # Incremental hesaplama state (rerun'da kaldığı yerden devam eder)
+# Önce checkpoint dosyasından kurtarma dene (app restart durumu)
 if "calc_in_progress" not in st.session_state:
-    st.session_state.calc_in_progress = False
-if "calc_source_df" not in st.session_state:
-    st.session_state.calc_source_df = None
-if "calc_index" not in st.session_state:
-    st.session_state.calc_index = 0
-if "calc_results" not in st.session_state:
-    st.session_state.calc_results = []
-if "calc_daily_sum" not in st.session_state:
-    st.session_state.calc_daily_sum = {}
-if "calc_params" not in st.session_state:
-    st.session_state.calc_params = {}
+    cp = load_checkpoint()
+    if cp and cp.get("calc_index", 0) > 0 and cp.get("source_records"):
+        # App restart olmuş ama yarım kalmış hesaplama var - kurtarılıyor
+        st.session_state.calc_in_progress = True
+        st.session_state.calc_source_df = pd.DataFrame(cp["source_records"])
+        st.session_state.calc_index = cp["calc_index"]
+        st.session_state.calc_results = cp["calc_results"]
+        st.session_state.calc_daily_sum = cp["calc_daily_sum"]
+        st.session_state.calc_params = cp["calc_params"]
+        st.toast(f"♻️ Yarım kalan hesaplama kurtarıldı! ({cp['calc_index']} cihaz tamamlanmıştı)", icon="♻️")
+    else:
+        st.session_state.calc_in_progress = False
+        st.session_state.calc_source_df = None
+        st.session_state.calc_index = 0
+        st.session_state.calc_results = []
+        st.session_state.calc_daily_sum = {}
+        st.session_state.calc_params = {}
 
 
 # -------------------------
@@ -570,12 +653,7 @@ with st.sidebar:
             st.session_state.device_df = device_df
 
             # Hesaplamayı başlat - parametreleri session_state'e kaydet
-            st.session_state.calc_in_progress = True
-            st.session_state.calc_source_df = source_df
-            st.session_state.calc_index = 0
-            st.session_state.calc_results = []
-            st.session_state.calc_daily_sum = {}
-            st.session_state.calc_params = {
+            calc_params = {
                 "payout_start": start_date + timedelta(days=1),
                 "payout_end": end_date + timedelta(days=1),
                 "geod_tl_rate": st.session_state.geod_p * st.session_state.usd_t,
@@ -588,6 +666,15 @@ with st.sidebar:
                 "target_tl": target_tl,
                 "kayit_adi": kayit_adi,
             }
+            st.session_state.calc_in_progress = True
+            st.session_state.calc_source_df = source_df
+            st.session_state.calc_index = 0
+            st.session_state.calc_results = []
+            st.session_state.calc_daily_sum = {}
+            st.session_state.calc_params = calc_params
+
+            # İlk checkpoint'i dosyaya yaz (app restart'a karşı)
+            save_checkpoint(0, [], {}, calc_params, source_df.to_dict(orient="records"))
             st.rerun()
 
         # İptal butonu
@@ -599,6 +686,7 @@ with st.sidebar:
                 st.session_state.calc_results = []
                 st.session_state.calc_daily_sum = {}
                 st.session_state.calc_params = {}
+                clear_checkpoint()
                 st.rerun()
 
     # ---- Incremental hesaplama motoru (rerun-safe) ----
@@ -703,8 +791,15 @@ with st.sidebar:
                 if bi < batch_end - 1:
                     time.sleep(1.5)
 
-            # Batch bitti, index'i güncelle ve rerun ile devam et
+            # Batch bitti, index'i güncelle, checkpoint'e yaz, rerun ile devam et
             st.session_state.calc_index = batch_end
+            save_checkpoint(
+                batch_end,
+                st.session_state.calc_results,
+                st.session_state.calc_daily_sum,
+                st.session_state.calc_params,
+                st.session_state.calc_source_df.to_dict(orient="records"),
+            )
             time.sleep(0.5)
             st.rerun()
 
@@ -733,7 +828,8 @@ with st.sidebar:
             if kayit_adi:
                 st.session_state.arsiv[kayit_adi] = st.session_state.last_results
 
-            # Hesaplama state'ini temizle
+            # Hesaplama state'ini temizle + checkpoint sil
+            clear_checkpoint()
             st.session_state.calc_in_progress = False
             st.session_state.calc_source_df = None
             st.session_state.calc_index = 0
