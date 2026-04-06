@@ -109,6 +109,7 @@ def parse_reward_date(item: dict):
 def get_all_rewards(sn: str, payout_start: date, payout_end: date, client_id: str, token: str):
     all_data = []
     curr = payout_start
+    chunk_idx = 0
     while curr <= payout_end:
         curr_end = min(curr + timedelta(days=29), payout_end)
         ts = str(int(time.time() * 1000))
@@ -119,21 +120,37 @@ def get_all_rewards(sn: str, payout_start: date, payout_end: date, client_id: st
             "minTime": encrypt_param(curr.strftime("%Y-%m-%d"), token),
             "maxTime": encrypt_param(curr_end.strftime("%Y-%m-%d"), token),
         }
-        try:
-            r = HTTP.get(
-                "https://consoleresapi.geodnet.com/getRewardsTimeLine",
-                params=params,
-                verify=False,
-                timeout=15,
-            )
-            res = r.json()
-            if res.get("statusCode") == 200:
-                data = res.get("data", [])
-                if data:
-                    all_data.extend(data)
-        except Exception:
-            pass
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                r = HTTP.get(
+                    "https://consoleresapi.geodnet.com/getRewardsTimeLine",
+                    params=params,
+                    verify=False,
+                    timeout=15,
+                )
+                res = r.json()
+                status_code = res.get("statusCode")
+                msg = str(res.get("msg", "") or "")
+                if status_code == 200:
+                    data = res.get("data", [])
+                    if data:
+                        all_data.extend(data)
+                    break
+                elif status_code == 602 or "excessive" in msg.lower():
+                    time.sleep(2.0 * (attempt + 1))
+                    continue
+                else:
+                    break
+            except Exception:
+                if attempt < max_retries - 1:
+                    time.sleep(1.5)
+                    continue
+                break
         curr = curr_end + timedelta(days=1)
+        chunk_idx += 1
+        if chunk_idx > 0:
+            time.sleep(1.5)
     return all_data
 
 
@@ -554,7 +571,7 @@ with st.sidebar:
             p_bar = st.progress(0)
             n = len(source_df)
 
-            for idx, row in source_df.iterrows():
+            for dev_i, (idx, row) in enumerate(source_df.iterrows()):
                 m_name = str(row["Musteri"]).strip()
                 sn_no = str(row["SN"]).strip()
                 tel = normalize_phone(row.get("Telefon"))
@@ -603,7 +620,10 @@ with st.sidebar:
                     "Durum_Etiket": durum_etiket
                 })
 
-                p_bar.progress((idx + 1) / n)
+                p_bar.progress((dev_i + 1) / n)
+
+                if dev_i < n - 1:
+                    time.sleep(2.0)
 
             df_res = pd.DataFrame(results)
             daily = (
