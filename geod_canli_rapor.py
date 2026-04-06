@@ -435,32 +435,32 @@ def create_pdf(m_name, data_df, g_price, u_try, s_date, device_df=None):
     pdf.ln(5)
 
     pdf.set_fill_color(240, 240, 240)
-    pdf.set_font("helvetica", "B", 6)
-    pdf.cell(24, 10, "Miner No", 1, 0, "C", True)
-    pdf.cell(20, 10, "Top.Kazanc", 1, 0, "C", True)
-    pdf.cell(20, 10, "PowerMin", 1, 0, "C", True)
-    pdf.cell(20, 10, "Hesaba Kat.", 1, 0, "C", True)
-    pdf.cell(20, 10, "Durum", 1, 0, "C", True)
-    pdf.cell(20, 10, "Hakedis", 1, 0, "C", True)
-    pdf.cell(18, 10, "Eklenen", 1, 0, "C", True)
-    pdf.cell(20, 10, "Top.GEOD", 1, 0, "C", True)
-    pdf.cell(28, 10, "Tutar(TL)", 1, 1, "C", True)
+    pdf.set_font("helvetica", "B", 7)
+    pdf.cell(30, 10, "Miner No", 1, 0, "C", True)
+    pdf.cell(20, 10, "Kazanc", 1, 0, "C", True)
+    pdf.cell(25, 10, "Durum", 1, 0, "C", True)
+    pdf.cell(25, 10, "Hakedis", 1, 0, "C", True)
+    pdf.cell(25, 10, "Eklenen", 1, 0, "C", True)
+    pdf.cell(30, 10, "Top.GEOD", 1, 0, "C", True)
+    pdf.cell(35, 10, "Tutar(TL)", 1, 1, "C", True)
 
-    pdf.set_font("helvetica", "", 6)
+    pdf.set_font("helvetica", "", 7)
     for _, row in data_df.iterrows():
         sn = str(row["SN"]).strip()
         pm = safe_float(row.get("Power_Mining", 0), 0.0)
-        hk = safe_float(row.get("Hesaba_Katilan", row.get("Toplam_GEOD_Kazanc", 0)), 0.0)
+        # Power Mining varsa Hesaba Katılan göster, yoksa Toplam (zaten aynı)
+        if pm > 0:
+            kazanc = safe_float(row.get("Hesaba_Katilan", row.get("Toplam_GEOD_Kazanc", 0)), 0.0)
+        else:
+            kazanc = safe_float(row.get("Toplam_GEOD_Kazanc", 0), 0.0)
 
-        pdf.cell(24, 10, sn, 1)
-        pdf.cell(20, 10, f"{row['Toplam_GEOD_Kazanc']:.2f}", 1)
-        pdf.cell(20, 10, f"{pm:.2f}", 1)
-        pdf.cell(20, 10, f"{hk:.2f}", 1)
-        pdf.cell(20, 10, temizle(row["Durum_Etiket"]), 1, 0, "C")
-        pdf.cell(20, 10, f"{row['Hakedis_Baz']:.2f}", 1)
-        pdf.cell(18, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
-        pdf.cell(20, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
-        pdf.cell(28, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, "C")
+        pdf.cell(30, 10, sn, 1)
+        pdf.cell(20, 10, f"{kazanc:.2f}", 1)
+        pdf.cell(25, 10, temizle(row["Durum_Etiket"]), 1, 0, "C")
+        pdf.cell(25, 10, f"{row['Hakedis_Baz']:.2f}", 1)
+        pdf.cell(25, 10, f"{row['EKLENEN_GEOD']:.2f}", 1)
+        pdf.cell(30, 10, f"{row['GEOD_HAKEDIS']:.2f}", 1)
+        pdf.cell(35, 10, f"{row['Hakedis_TL']:.2f} TL", 1, 1, "C")
 
         # İl + Konum satırı
         il, konum = loc_map.get(sn, ("", ""))
@@ -488,13 +488,14 @@ def wp_mesaj_olustur(m_name, m_data, donem, kur_geod, kur_usd):
     msg += f"━━━━━━━━━━━━━━━━━━━\n\n"
     for _, row in m_data.iterrows():
         simge = "✅" if row["Durum_Etiket"] == "TAM KAZANC" else "🎁" if row["Durum_Etiket"] == "DESTEKLENDI" else "⚠️"
-        msg += f"{simge} *Miner:* {row['SN']}\n"
-        msg += f"   └ Toplam: {row['Toplam_GEOD_Kazanc']:.2f} GEOD\n"
         pm = safe_float(row.get("Power_Mining", 0), 0.0)
-        hk = safe_float(row.get("Hesaba_Katilan", row.get("Toplam_GEOD_Kazanc", 0)), 0.0)
+        # Power Mining varsa Hesaba Katılan, yoksa Toplam göster
         if pm > 0:
-            msg += f"   └ Power Mining: {pm:.2f} GEOD\n"
-            msg += f"   └ Hesaba Katilan: {hk:.2f} GEOD\n"
+            kazanc = safe_float(row.get("Hesaba_Katilan", row.get("Toplam_GEOD_Kazanc", 0)), 0.0)
+        else:
+            kazanc = safe_float(row.get("Toplam_GEOD_Kazanc", 0), 0.0)
+        msg += f"{simge} *Miner:* {row['SN']}\n"
+        msg += f"   └ Kazanc: {kazanc:.2f} GEOD\n"
         if row["EKLENEN_GEOD"] > 0:
             msg += f"   └ Destek: +{row['EKLENEN_GEOD']:.2f} GEOD\n"
         msg += f"   └ *Hakedis:* {row['Hakedis_TL']:.2f} TL\n\n"
