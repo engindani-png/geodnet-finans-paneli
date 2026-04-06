@@ -689,155 +689,6 @@ with st.sidebar:
                 clear_checkpoint()
                 st.rerun()
 
-    # ---- Incremental hesaplama motoru (rerun-safe) ----
-    if st.session_state.calc_in_progress and st.session_state.calc_source_df is not None:
-        source_df = st.session_state.calc_source_df
-        params = st.session_state.calc_params
-        n = len(source_df)
-        dev_i = st.session_state.calc_index
-
-        # Önceki batch'lerden gelen sonuçları hemen göster
-        if st.session_state.calc_results:
-            st.divider()
-            partial_df = pd.DataFrame(st.session_state.calc_results)
-            st.subheader(f"📊 Canlı Sonuçlar ({len(partial_df)}/{n} cihaz)")
-
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Tamamlanan", f"{len(partial_df)} / {n}")
-            col_b.metric("Toplam GEOD", f"{partial_df['Toplam_GEOD_Kazanc'].sum():.2f}")
-            col_c.metric("Toplam TL", f"{partial_df['Hakedis_TL'].sum():.2f} TL")
-
-            st.dataframe(
-                partial_df[["Is_Ortagi", "SN", "Toplam_GEOD_Kazanc", "Durum_Etiket", "GEOD_HAKEDIS", "Hakedis_TL"]].style.format({
-                    "Toplam_GEOD_Kazanc": "{:.2f}",
-                    "GEOD_HAKEDIS": "{:.2f}",
-                    "Hakedis_TL": "{:.2f} TL",
-                }),
-                use_container_width=True,
-                height=min(400, 35 * len(partial_df) + 38),
-            )
-            st.divider()
-
-        if dev_i < n:
-            # Progress bar göster
-            st.info(f"⏳ Hesaplama devam ediyor... ({dev_i}/{n} cihaz tamamlandı, şimdi {dev_i+1}-{min(dev_i+10, n)} arası işleniyor)")
-            p_bar = st.progress(dev_i / n)
-
-            # Her rerun'da BATCH_SIZE kadar cihaz işle (rerun timeout'u önler)
-            BATCH_SIZE = 10
-            batch_end = min(dev_i + BATCH_SIZE, n)
-
-            for bi in range(dev_i, batch_end):
-                row = source_df.iloc[bi]
-                m_name = str(row["Musteri"]).strip()
-                sn_no = str(row["SN"]).strip()
-                tel = normalize_phone(row.get("Telefon"))
-                kp_raw = safe_float(row["Kar_Payi"], 0.0)
-                kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
-
-                raw_data = get_all_rewards(
-                    sn_no, params["payout_start"], params["payout_end"],
-                    params["client_id"], params["token"]
-                )
-
-                total_token = 0.0
-                daily_sum = st.session_state.calc_daily_sum
-                for d in raw_data:
-                    rw = safe_float(d.get("reward", 0), 0.0)
-                    total_token += rw
-                    payout_day = parse_reward_date(d)
-                    if payout_day:
-                        perf_day = payout_day - timedelta(days=1)
-                        if params["start_date"] <= perf_day <= params["end_date"]:
-                            daily_sum[perf_day] = daily_sum.get(perf_day, 0.0) + rw
-                st.session_state.calc_daily_sum = daily_sum
-
-                geod_tl_rate = params["geod_tl_rate"]
-                thr = params["thr"]
-                tgt = params["tgt"]
-
-                mevcut_pay_token = total_token * kp_rate
-                mevcut_tl = mevcut_pay_token * geod_tl_rate
-
-                eklenen_geod = 0.0
-                if total_token < thr:
-                    geod_hakedis = mevcut_pay_token
-                    durum_etiket = "AZ URETIM"
-                else:
-                    if mevcut_tl < tgt:
-                        eksik_tl = tgt - mevcut_tl
-                        eklenen_geod = eksik_tl / geod_tl_rate if geod_tl_rate > 0 else 0.0
-                        geod_hakedis = mevcut_pay_token + eklenen_geod
-                        durum_etiket = "DESTEKLENDI"
-                    else:
-                        geod_hakedis = mevcut_pay_token
-                        durum_etiket = "TAM KAZANC"
-
-                st.session_state.calc_results.append({
-                    "Is_Ortagi": m_name,
-                    "SN": sn_no,
-                    "Telefon": tel,
-                    "Toplam_GEOD_Kazanc": total_token,
-                    "Hakedis_Baz": mevcut_pay_token,
-                    "EKLENEN_GEOD": eklenen_geod,
-                    "GEOD_HAKEDIS": geod_hakedis,
-                    "Hakedis_TL": geod_hakedis * geod_tl_rate,
-                    "MONSPRO_KAZANC": total_token - geod_hakedis,
-                    "Durum_Etiket": durum_etiket
-                })
-
-                p_bar.progress((bi + 1) / n)
-
-                if bi < batch_end - 1:
-                    time.sleep(1.5)
-
-            # Batch bitti, index'i güncelle, checkpoint'e yaz, rerun ile devam et
-            st.session_state.calc_index = batch_end
-            save_checkpoint(
-                batch_end,
-                st.session_state.calc_results,
-                st.session_state.calc_daily_sum,
-                st.session_state.calc_params,
-                st.session_state.calc_source_df.to_dict(orient="records"),
-            )
-            time.sleep(0.5)
-            st.rerun()
-
-        else:
-            # Tüm cihazlar tamamlandı - sonuçları oluştur
-            df_res = pd.DataFrame(st.session_state.calc_results)
-            daily_sum = st.session_state.calc_daily_sum
-            daily = (
-                pd.DataFrame([{"Performance_Day": k, "GEOD": v} for k, v in daily_sum.items()])
-                .sort_values("Performance_Day") if daily_sum else
-                pd.DataFrame(columns=["Performance_Day", "GEOD"])
-            )
-
-            st.session_state.last_results = {
-                "df": df_res,
-                "donem": f"{params['start_date'].strftime('%d.%m.%Y')} - {params['end_date'].strftime('%d.%m.%Y')}",
-                "ay": params["start_date"].strftime("%B %Y"),
-                "kur_geod": st.session_state.geod_p,
-                "kur_usd": st.session_state.usd_t,
-                "target": params["target_tl"],
-                "low_threshold": params["thr"],
-                "daily": daily,
-            }
-
-            kayit_adi = params.get("kayit_adi", "")
-            if kayit_adi:
-                st.session_state.arsiv[kayit_adi] = st.session_state.last_results
-
-            # Hesaplama state'ini temizle + checkpoint sil
-            clear_checkpoint()
-            st.session_state.calc_in_progress = False
-            st.session_state.calc_source_df = None
-            st.session_state.calc_index = 0
-            st.session_state.calc_results = []
-            st.session_state.calc_daily_sum = {}
-            st.session_state.calc_params = {}
-            st.success(f"✅ Hesaplama tamamlandı! {len(df_res)} cihaz işlendi.")
-            st.rerun()
 
 
 # -------------------------
@@ -849,6 +700,156 @@ geod_try_val = st.session_state.geod_p * st.session_state.usd_t
 c1.metric("GEOD / USD", f"${st.session_state.geod_p:.4f}")
 c2.metric("USD / TRY", f"{st.session_state.usd_t:.2f} TL")
 c3.metric("GEOD / TRY", f"{geod_try_val:.2f} TL")
+
+# ---- Incremental hesaplama motoru (ana dashboard'da, rerun-safe) ----
+if st.session_state.calc_in_progress and st.session_state.calc_source_df is not None:
+    source_df = st.session_state.calc_source_df
+    params = st.session_state.calc_params
+    n = len(source_df)
+    dev_i = st.session_state.calc_index
+
+    # Önceki batch'lerden gelen sonuçları hemen göster
+    if st.session_state.calc_results:
+        st.divider()
+        partial_df = pd.DataFrame(st.session_state.calc_results)
+        st.subheader(f"📊 Canlı Sonuçlar ({len(partial_df)}/{n} cihaz)")
+
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Tamamlanan", f"{len(partial_df)} / {n}")
+        col_b.metric("Toplam GEOD", f"{partial_df['Toplam_GEOD_Kazanc'].sum():.2f}")
+        col_c.metric("Toplam TL", f"{partial_df['Hakedis_TL'].sum():.2f} TL")
+
+        st.dataframe(
+            partial_df[["Is_Ortagi", "SN", "Toplam_GEOD_Kazanc", "Durum_Etiket", "GEOD_HAKEDIS", "Hakedis_TL"]].style.format({
+                "Toplam_GEOD_Kazanc": "{:.2f}",
+                "GEOD_HAKEDIS": "{:.2f}",
+                "Hakedis_TL": "{:.2f} TL",
+            }),
+            use_container_width=True,
+            height=min(400, 35 * len(partial_df) + 38),
+        )
+        st.divider()
+
+    if dev_i < n:
+        # Progress bar göster
+        st.info(f"⏳ Hesaplama devam ediyor... ({dev_i}/{n} cihaz tamamlandı, şimdi {dev_i+1}-{min(dev_i+10, n)} arası işleniyor)")
+        p_bar = st.progress(dev_i / n)
+
+        # Her rerun'da BATCH_SIZE kadar cihaz işle
+        BATCH_SIZE = 10
+        batch_end = min(dev_i + BATCH_SIZE, n)
+
+        for bi in range(dev_i, batch_end):
+            row = source_df.iloc[bi]
+            m_name = str(row["Musteri"]).strip()
+            sn_no = str(row["SN"]).strip()
+            tel = normalize_phone(row.get("Telefon"))
+            kp_raw = safe_float(row["Kar_Payi"], 0.0)
+            kp_rate = kp_raw / 100 if kp_raw > 1 else kp_raw
+
+            raw_data = get_all_rewards(
+                sn_no, params["payout_start"], params["payout_end"],
+                params["client_id"], params["token"]
+            )
+
+            total_token = 0.0
+            daily_sum = st.session_state.calc_daily_sum
+            for d in raw_data:
+                rw = safe_float(d.get("reward", 0), 0.0)
+                total_token += rw
+                payout_day = parse_reward_date(d)
+                if payout_day:
+                    perf_day = payout_day - timedelta(days=1)
+                    if params["start_date"] <= perf_day <= params["end_date"]:
+                        daily_sum[perf_day] = daily_sum.get(perf_day, 0.0) + rw
+            st.session_state.calc_daily_sum = daily_sum
+
+            geod_tl_rate = params["geod_tl_rate"]
+            thr = params["thr"]
+            tgt = params["tgt"]
+
+            mevcut_pay_token = total_token * kp_rate
+            mevcut_tl = mevcut_pay_token * geod_tl_rate
+
+            eklenen_geod = 0.0
+            if total_token < thr:
+                geod_hakedis = mevcut_pay_token
+                durum_etiket = "AZ URETIM"
+            else:
+                if mevcut_tl < tgt:
+                    eksik_tl = tgt - mevcut_tl
+                    eklenen_geod = eksik_tl / geod_tl_rate if geod_tl_rate > 0 else 0.0
+                    geod_hakedis = mevcut_pay_token + eklenen_geod
+                    durum_etiket = "DESTEKLENDI"
+                else:
+                    geod_hakedis = mevcut_pay_token
+                    durum_etiket = "TAM KAZANC"
+
+            st.session_state.calc_results.append({
+                "Is_Ortagi": m_name,
+                "SN": sn_no,
+                "Telefon": tel,
+                "Toplam_GEOD_Kazanc": total_token,
+                "Hakedis_Baz": mevcut_pay_token,
+                "EKLENEN_GEOD": eklenen_geod,
+                "GEOD_HAKEDIS": geod_hakedis,
+                "Hakedis_TL": geod_hakedis * geod_tl_rate,
+                "MONSPRO_KAZANC": total_token - geod_hakedis,
+                "Durum_Etiket": durum_etiket
+            })
+
+            p_bar.progress((bi + 1) / n)
+
+            if bi < batch_end - 1:
+                time.sleep(1.5)
+
+        # Batch bitti, checkpoint'e yaz, rerun ile devam et
+        st.session_state.calc_index = batch_end
+        save_checkpoint(
+            batch_end,
+            st.session_state.calc_results,
+            st.session_state.calc_daily_sum,
+            st.session_state.calc_params,
+            st.session_state.calc_source_df.to_dict(orient="records"),
+        )
+        time.sleep(0.5)
+        st.rerun()
+
+    else:
+        # Tüm cihazlar tamamlandı - sonuçları oluştur
+        df_res = pd.DataFrame(st.session_state.calc_results)
+        daily_sum = st.session_state.calc_daily_sum
+        daily = (
+            pd.DataFrame([{"Performance_Day": k, "GEOD": v} for k, v in daily_sum.items()])
+            .sort_values("Performance_Day") if daily_sum else
+            pd.DataFrame(columns=["Performance_Day", "GEOD"])
+        )
+
+        st.session_state.last_results = {
+            "df": df_res,
+            "donem": f"{params['start_date'].strftime('%d.%m.%Y')} - {params['end_date'].strftime('%d.%m.%Y')}",
+            "ay": params["start_date"].strftime("%B %Y"),
+            "kur_geod": st.session_state.geod_p,
+            "kur_usd": st.session_state.usd_t,
+            "target": params["target_tl"],
+            "low_threshold": params["thr"],
+            "daily": daily,
+        }
+
+        kayit_adi = params.get("kayit_adi", "")
+        if kayit_adi:
+            st.session_state.arsiv[kayit_adi] = st.session_state.last_results
+
+        # Hesaplama state'ini temizle + checkpoint sil
+        clear_checkpoint()
+        st.session_state.calc_in_progress = False
+        st.session_state.calc_source_df = None
+        st.session_state.calc_index = 0
+        st.session_state.calc_results = []
+        st.session_state.calc_daily_sum = {}
+        st.session_state.calc_params = {}
+        st.success(f"✅ Hesaplama tamamlandı! {len(df_res)} cihaz işlendi.")
+        st.rerun()
 
 if menu == "📊 Yeni Sorgu":
     mode = st.session_state.get("mode", "Ödül Hesapla")
