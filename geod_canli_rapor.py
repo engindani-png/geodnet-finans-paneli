@@ -19,6 +19,7 @@ st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 PAYOUT_CUTOFF_TR = "08:30"
 LOW_PROD_THRESHOLD_DEFAULT = 180
 DAILY_NORMAL_GEOD = 12  # Günlük normal kazanç limiti (üstü Power Mining)
+DAILY_SUPERHEX_GEOD = 48  # Superhex cihazlar için günlük kazanç limiti
 
 HTTP = requests.Session()
 
@@ -581,6 +582,13 @@ with st.sidebar:
         mode = st.radio("Mod", ["Ödül Hesapla", "Offline Takibi"], index=0 if st.session_state.mode == "Ödül Hesapla" else 1)
         st.session_state.mode = mode
 
+        hesap_tipi = st.radio("Hesap Tipi", ["Normal Hesap", "Superhex Hesabı"], index=0,
+                              help="Superhex cihazlarda günlük limit 48 GEOD, normal cihazlarda 12 GEOD")
+        is_superhex = hesap_tipi == "Superhex Hesabı"
+
+        if is_superhex:
+            st.info("🔷 **Superhex Modu**: Günlük limit 48 GEOD/cihaz. Fazlası Power Mining olarak değerlendirilir.")
+
         target_tl = st.number_input("Tamamlanacak TL Tutarı", min_value=0, value=500, step=50)
         low_threshold = st.number_input("Low üretim eşiği (GEOD)", min_value=0, value=LOW_PROD_THRESHOLD_DEFAULT, step=10)
 
@@ -680,7 +688,9 @@ with st.sidebar:
                 "target_tl": target_tl,
                 "kayit_adi": kayit_adi,
                 "gun_sayisi": gun_sayisi,
-                "max_normal_geod": gun_sayisi * DAILY_NORMAL_GEOD,
+                "is_superhex": is_superhex,
+                "daily_limit": DAILY_SUPERHEX_GEOD if is_superhex else DAILY_NORMAL_GEOD,
+                "max_normal_geod": gun_sayisi * (DAILY_SUPERHEX_GEOD if is_superhex else DAILY_NORMAL_GEOD),
             }
             st.session_state.calc_in_progress = True
             st.session_state.calc_source_df = source_df
@@ -728,7 +738,9 @@ if st.session_state.calc_in_progress and st.session_state.calc_source_df is not 
     if st.session_state.calc_results:
         st.divider()
         partial_df = pd.DataFrame(st.session_state.calc_results)
-        st.subheader(f"📊 Canlı Sonuçlar ({len(partial_df)}/{n} cihaz)")
+        _shex = params.get("is_superhex", False)
+        _badge = "🔷 SUPERHEX" if _shex else "🟢 NORMAL"
+        st.subheader(f"📊 Canlı Sonuçlar ({len(partial_df)}/{n} cihaz) — {_badge}")
 
         col_a, col_b, col_c, col_d = st.columns(4)
         col_a.metric("Tamamlanan", f"{len(partial_df)} / {n}")
@@ -860,6 +872,9 @@ if st.session_state.calc_in_progress and st.session_state.calc_source_df is not 
             "target": params["target_tl"],
             "low_threshold": params["thr"],
             "daily": daily,
+            "is_superhex": params.get("is_superhex", False),
+            "daily_limit": params.get("daily_limit", DAILY_NORMAL_GEOD),
+            "gun_sayisi": params.get("gun_sayisi", 30),
         }
 
         kayit_adi = params.get("kayit_adi", "")
@@ -943,7 +958,18 @@ if menu == "📊 Yeni Sorgu":
             df = res["df"]
             daily = res.get("daily", pd.DataFrame(columns=["Performance_Day", "GEOD"]))
 
-            st.subheader("📊 Dönem Finansal Özeti")
+            is_shex = res.get("is_superhex", False)
+            d_limit = res.get("daily_limit", DAILY_NORMAL_GEOD)
+            gun_s = res.get("gun_sayisi", 30)
+            max_norm = d_limit * gun_s
+
+            hesap_badge = "🔷 SUPERHEX" if is_shex else "🟢 NORMAL"
+            st.subheader(f"📊 Dönem Finansal Özeti — {hesap_badge}")
+            if is_shex:
+                st.caption(f"Superhex modu: Günlük limit **{d_limit} GEOD**, {gun_s} gün → Maks {max_norm} GEOD/cihaz")
+            else:
+                st.caption(f"Normal mod: Günlük limit **{d_limit} GEOD**, {gun_s} gün → Maks {max_norm} GEOD/cihaz")
+
             col_a, col_b, col_c, col_d, col_e = st.columns(5)
             with col_a:
                 st.info(f"📅 **Hesap Dönemi:**\n\n{res['donem']}")
@@ -951,7 +977,8 @@ if menu == "📊 Yeni Sorgu":
                 st.success(f"🛰️ **Total GEOD:**\n\n{df['Toplam_GEOD_Kazanc'].sum():.2f}")
             with col_c:
                 pm_total = df['Power_Mining'].sum() if 'Power_Mining' in df.columns else 0.0
-                st.metric("⚡ Power Mining", f"{pm_total:.2f} GEOD")
+                st.metric("⚡ Power Mining", f"{pm_total:.2f} GEOD",
+                          help="Günlük limitin üzerindeki kazanç (Power Mining ödülü). PDF raporunda yer almaz.")
             with col_d:
                 st.warning(f"💸 **İş Ortağı Ödemesi:**\n\n{df['GEOD_HAKEDIS'].sum():.2f}")
             with col_e:
