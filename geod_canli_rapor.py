@@ -18,8 +18,37 @@ st.set_page_config(page_title="MonsPro | Operasyonel Portal", layout="wide")
 
 PAYOUT_CUTOFF_TR = "08:30"
 LOW_PROD_THRESHOLD_DEFAULT = 180
-DAILY_NORMAL_GEOD = 12  # Günlük normal kazanç limiti (üstü Power Mining)
-DAILY_SUPERHEX_GEOD = 48  # Superhex cihazlar için günlük kazanç limiti
+
+# --- GEOD Halving (1 Temmuz 2026) ---
+# 1 Temmuz 2026 itibarıyla günlük normal kazanç 12 → 6 GEOD'a düştü.
+# Dönem halving tarihini kapsıyorsa limit gün bazında karma hesaplanır:
+#   maks_normal = (halving öncesi gün × eski limit) + (halving sonrası gün × yeni limit)
+HALVING_DATE = date(2026, 7, 1)
+DAILY_NORMAL_GEOD_PRE = 12       # halving ÖNCESİ günlük normal limit
+DAILY_NORMAL_GEOD_POST = 6       # halving SONRASI günlük normal limit
+DAILY_SUPERHEX_GEOD_PRE = 48     # superhex: normalin 4 katı
+DAILY_SUPERHEX_GEOD_POST = 24
+# Geriye uyum (arşiv kayıtları vb. eski sabit adını kullanıyor)
+DAILY_NORMAL_GEOD = DAILY_NORMAL_GEOD_POST
+DAILY_SUPERHEX_GEOD = DAILY_SUPERHEX_GEOD_POST
+
+
+def max_normal_for_period(start_d: date, end_d: date, is_superhex: bool):
+    """Halving-bilinçli maks normal GEOD limiti.
+
+    Dönüş: (maks_normal_geod, halving_oncesi_gun, halving_sonrasi_gun)
+    """
+    pre_rate = DAILY_SUPERHEX_GEOD_PRE if is_superhex else DAILY_NORMAL_GEOD_PRE
+    post_rate = DAILY_SUPERHEX_GEOD_POST if is_superhex else DAILY_NORMAL_GEOD_POST
+    total_days = (end_d - start_d).days + 1
+    if end_d < HALVING_DATE:                       # tamamen halving öncesi
+        pre_days = total_days
+    elif start_d >= HALVING_DATE:                  # tamamen halving sonrası
+        pre_days = 0
+    else:                                          # karma dönem
+        pre_days = (HALVING_DATE - start_d).days
+    post_days = total_days - pre_days
+    return pre_days * pre_rate + post_days * post_rate, pre_days, post_days
 
 HTTP = requests.Session()
 
@@ -583,11 +612,16 @@ with st.sidebar:
         st.session_state.mode = mode
 
         hesap_tipi = st.radio("Hesap Tipi", ["Normal Hesap", "Superhex Hesabı"], index=0,
-                              help="Superhex cihazlarda günlük limit 48 GEOD, normal cihazlarda 12 GEOD")
+                              help="Günlük limit — normal: 12 GEOD (1 Tem 2026'dan itibaren 6), "
+                                   "superhex: 48 GEOD (1 Tem 2026'dan itibaren 24). "
+                                   "Halving dönem içinde gün bazında otomatik uygulanır.")
         is_superhex = hesap_tipi == "Superhex Hesabı"
 
         if is_superhex:
-            st.info("🔷 **Superhex Modu**: Günlük limit 48 GEOD/cihaz. Fazlası Power Mining olarak değerlendirilir.")
+            st.info("🔷 **Superhex Modu**: Günlük limit 24 GEOD/cihaz (1 Tem 2026 öncesi günler 48). "
+                    "Fazlası Power Mining olarak değerlendirilir.")
+        st.caption(f"⚡ Halving: {HALVING_DATE.strftime('%d.%m.%Y')} itibarıyla günlük normal kazanç "
+                   f"{DAILY_NORMAL_GEOD_PRE} → {DAILY_NORMAL_GEOD_POST} GEOD. Dönem limiti gün bazında hesaplanır.")
 
         target_tl = st.number_input("Tamamlanacak TL Tutarı", min_value=0, value=500, step=50)
         low_threshold = st.number_input("Low üretim eşiği (GEOD)", min_value=0, value=LOW_PROD_THRESHOLD_DEFAULT, step=10)
@@ -675,6 +709,8 @@ with st.sidebar:
 
             # Hesaplamayı başlat - parametreleri session_state'e kaydet
             gun_sayisi = (end_date - start_date).days + 1
+            max_normal_geod, halving_pre_days, halving_post_days = max_normal_for_period(
+                start_date, end_date, is_superhex)
             calc_params = {
                 "payout_start": start_date + timedelta(days=1),
                 "payout_end": end_date + timedelta(days=1),
@@ -689,8 +725,10 @@ with st.sidebar:
                 "kayit_adi": kayit_adi,
                 "gun_sayisi": gun_sayisi,
                 "is_superhex": is_superhex,
-                "daily_limit": DAILY_SUPERHEX_GEOD if is_superhex else DAILY_NORMAL_GEOD,
-                "max_normal_geod": gun_sayisi * (DAILY_SUPERHEX_GEOD if is_superhex else DAILY_NORMAL_GEOD),
+                "daily_limit": DAILY_SUPERHEX_GEOD_POST if is_superhex else DAILY_NORMAL_GEOD_POST,
+                "max_normal_geod": max_normal_geod,          # halving-bilinçli (gün bazında karma)
+                "halving_pre_days": halving_pre_days,
+                "halving_post_days": halving_post_days,
             }
             st.session_state.calc_in_progress = True
             st.session_state.calc_source_df = source_df
@@ -875,6 +913,9 @@ if st.session_state.calc_in_progress and st.session_state.calc_source_df is not 
             "is_superhex": params.get("is_superhex", False),
             "daily_limit": params.get("daily_limit", DAILY_NORMAL_GEOD),
             "gun_sayisi": params.get("gun_sayisi", 30),
+            "max_normal_geod": params.get("max_normal_geod"),
+            "halving_pre_days": params.get("halving_pre_days", 0),
+            "halving_post_days": params.get("halving_post_days", 0),
         }
 
         kayit_adi = params.get("kayit_adi", "")
@@ -961,14 +1002,25 @@ if menu == "📊 Yeni Sorgu":
             is_shex = res.get("is_superhex", False)
             d_limit = res.get("daily_limit", DAILY_NORMAL_GEOD)
             gun_s = res.get("gun_sayisi", 30)
-            max_norm = d_limit * gun_s
+            max_norm = res.get("max_normal_geod") or (d_limit * gun_s)
+            pre_d = res.get("halving_pre_days", 0)
+            post_d = res.get("halving_post_days", 0)
+            pre_rate = DAILY_SUPERHEX_GEOD_PRE if is_shex else DAILY_NORMAL_GEOD_PRE
+            post_rate = DAILY_SUPERHEX_GEOD_POST if is_shex else DAILY_NORMAL_GEOD_POST
 
             hesap_badge = "🔷 SUPERHEX" if is_shex else "🟢 NORMAL"
+            mod_adi = "Superhex modu" if is_shex else "Normal mod"
             st.subheader(f"📊 Dönem Finansal Özeti — {hesap_badge}")
-            if is_shex:
-                st.caption(f"Superhex modu: Günlük limit **{d_limit} GEOD**, {gun_s} gün → Maks {max_norm} GEOD/cihaz")
+            if pre_d > 0 and post_d > 0:
+                st.caption(f"{mod_adi}: {pre_d} gün × {pre_rate} GEOD (halving öncesi) + "
+                           f"{post_d} gün × {post_rate} GEOD (halving sonrası) → Maks **{max_norm} GEOD**/cihaz")
+            elif pre_d > 0:
+                st.caption(f"{mod_adi}: Günlük limit **{pre_rate} GEOD** (halving öncesi dönem), "
+                           f"{gun_s} gün → Maks {max_norm} GEOD/cihaz")
             else:
-                st.caption(f"Normal mod: Günlük limit **{d_limit} GEOD**, {gun_s} gün → Maks {max_norm} GEOD/cihaz")
+                st.caption(f"{mod_adi}: Günlük limit **{post_rate} GEOD** "
+                           f"(halving sonrası, {HALVING_DATE.strftime('%d.%m.%Y')}+), "
+                           f"{gun_s} gün → Maks {max_norm} GEOD/cihaz")
 
             col_a, col_b, col_c, col_d, col_e = st.columns(5)
             with col_a:
